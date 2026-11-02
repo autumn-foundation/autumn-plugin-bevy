@@ -24,7 +24,7 @@ use crate::shared::{Failure, Shared, Stats};
 use crate::status::{RuntimeId, RuntimeStatus};
 
 /// The name of the Bevy thread.
-pub(crate) const THREAD_NAME: &str = "autumn-bevy";
+pub const THREAD_NAME: &str = "autumn-bevy";
 
 /// The longest wait for a message. It bounds how late the loop sees the stop
 /// flag when no message wakes it.
@@ -39,12 +39,12 @@ thread_local! {
 
 /// `true` on the thread of runtime `id`. A call into the same runtime from
 /// there would wait for itself.
-pub(crate) fn on_runtime_thread(id: RuntimeId) -> bool {
+pub fn on_runtime_thread(id: RuntimeId) -> bool {
     CURRENT.with(|current| current.get() == Some(id))
 }
 
 /// Starts the thread. The thread owns `rx` and the app until it ends.
-pub(crate) fn spawn(shared: Arc<Shared>, setup: Setup, rx: Receiver<Msg>) -> io::Result<()> {
+pub fn spawn(shared: Arc<Shared>, setup: Setup, rx: Receiver<Msg>) -> io::Result<()> {
     std::thread::Builder::new()
         .name(THREAD_NAME.to_owned())
         .spawn(move || Driver { shared, rx }.run(setup))

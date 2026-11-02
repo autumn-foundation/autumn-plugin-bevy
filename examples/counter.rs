@@ -45,9 +45,12 @@ fn game(app: &mut App) {
 async fn main() {
     let rate = TickRate::new(10).unwrap_or_default();
     let config = BevyConfig::default().with_tick_mode(TickMode::Fixed(rate));
-    autumn_web::app()
-        .plugin(BevyPlugin::new(game).config(config))
-        .routes(routes![counter, reset])
-        .run()
-        .await;
+    // The server future is large, so it lives on the heap.
+    Box::pin(
+        autumn_web::app()
+            .plugin(BevyPlugin::new(game).config(config))
+            .routes(routes![counter, reset])
+            .run(),
+    )
+    .await;
 }

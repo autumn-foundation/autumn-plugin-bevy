@@ -5,7 +5,7 @@ use crate::status::RuntimeStatus;
 
 /// An event that can change the status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Event {
+pub enum Event {
     /// `BevyRuntime::start` spawned the thread.
     Start,
     /// Setup and the first update are done.
@@ -36,21 +36,20 @@ impl Event {
 
 /// The status after `event`, or `None` when the event is not allowed. On
 /// `None` the runtime changes nothing.
-pub(crate) const fn next(status: RuntimeStatus, event: Event) -> Option<RuntimeStatus> {
+pub const fn next(status: RuntimeStatus, event: Event) -> Option<RuntimeStatus> {
     use RuntimeStatus::{Failed, NotStarted, Running, Starting, Stopped, Stopping};
     match (status, event) {
         (NotStarted, Event::Start) => Some(Starting),
-        (NotStarted, Event::Stop) => Some(Stopped),
+        (NotStarted, Event::Stop) | (Stopping, Event::Drained { failed: false }) => Some(Stopped),
         (Starting, Event::Ready) => Some(Running),
         (Starting | Running, Event::Stop | Event::Fail) => Some(Stopping),
-        (Stopping, Event::Drained { failed: false }) => Some(Stopped),
         (Stopping, Event::Drained { failed: true }) => Some(Failed),
         _ => None,
     }
 }
 
 /// The rank of a status. Each allowed step makes it go up.
-pub(crate) const fn rank(status: RuntimeStatus) -> u8 {
+pub const fn rank(status: RuntimeStatus) -> u8 {
     match status {
         RuntimeStatus::NotStarted => 0,
         RuntimeStatus::Starting => 1,

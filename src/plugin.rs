@@ -73,7 +73,7 @@ impl BevyPlugin {
 
     /// Sets the configuration.
     #[must_use]
-    pub fn config(mut self, config: BevyConfig) -> Self {
+    pub const fn config(mut self, config: BevyConfig) -> Self {
         self.config = config;
         self
     }
@@ -163,5 +163,73 @@ impl fmt::Debug for BevyPlugin {
             .field("config", &self.config)
             .field("setups", &self.setups.len())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::status::RuntimeStatus;
+
+    fn manual() -> BevyConfig {
+        BevyConfig::manual().with_shutdown_timeout(Duration::from_secs(5))
+    }
+
+    #[tokio::test]
+    async fn startup_hook_starts_and_is_idempotent() {
+        let runtime = BevyRuntime::new(manual(), |_app| {});
+        start(&runtime).await.expect("first start");
+        assert_eq!(runtime.status(), RuntimeStatus::Running);
+        start(&runtime).await.expect("a second call is fine");
+        stop(&runtime).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_hook_stops_runtime() {
+        let runtime = BevyRuntime::new(manual(), |_app| {});
+        start(&runtime).await.expect("start");
+        stop(&runtime).await;
+        assert_eq!(runtime.status(), RuntimeStatus::Stopped);
+        // A second stop is a no-op.
+        stop(&runtime).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_hook_logs_a_late_stop() {
+        let config = manual().with_shutdown_timeout(Duration::from_millis(50));
+        let runtime = BevyRuntime::new(config, |_app| {});
+        start(&runtime).await.expect("start");
+        let handle = runtime.handle();
+        let stuck = tokio::spawn(async move {
+            handle
+                .with_world_timeout(None, |_w| std::thread::sleep(Duration::from_millis(400)))
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        stop(&runtime).await;
+        assert!(
+            !runtime.status().is_terminal(),
+            "the hook returns before the thread stops"
+        );
+        let _ = stuck.await;
+    }
+
+    #[tokio::test]
+    async fn startup_hook_maps_a_setup_panic() {
+        let runtime = BevyRuntime::new(manual(), |_app| panic!("boom in setup"));
+        let err = start(&runtime).await.expect_err("setup panics");
+        let text = err.to_string();
+        assert!(text.contains("bevy runtime did not start"), "{text}");
+        assert!(text.contains("boom in setup"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn startup_hook_refuses_a_stopped_runtime() {
+        let runtime = BevyRuntime::new(manual(), |_app| {});
+        runtime.shutdown().await.expect("shutdown before start");
+        let err = start(&runtime).await.expect_err("stopped");
+        assert!(err.to_string().contains("not running"), "{err}");
     }
 }

@@ -1,7 +1,5 @@
 //! `BevyRuntime` and `BevyHandle` behavior, with no Autumn app.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -756,9 +754,9 @@ async fn digest_after(steps: u32) -> u64 {
         .unwrap();
     values.sort_unstable();
     runtime.shutdown().await.unwrap();
-    let mut hasher = DefaultHasher::new();
-    values.hash(&mut hasher);
-    hasher.finish()
+    values.iter().fold(0_u64, |acc, v| {
+        acc.wrapping_mul(1_000_003).wrapping_add(v.0)
+    })
 }
 
 #[tokio::test]

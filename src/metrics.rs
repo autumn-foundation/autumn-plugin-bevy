@@ -79,7 +79,7 @@ impl MetricsSource for BevyMetrics {
             ),
             plain(
                 "bevy_entities",
-                "Entities in the world after the last update",
+                "Entities in the world after the last update, with the Bevy internal entities",
                 MetricKind::Gauge,
                 count(&stats.entities),
             ),

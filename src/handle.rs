@@ -145,17 +145,17 @@ impl BevyHandle {
             return Err(RuntimeError::NotRunning(status));
         }
         let (reply_tx, reply_rx) = oneshot::channel();
-        let stats = &self.shared.stats;
-        stats.enqueue();
+        let counters = &self.shared.stats;
+        counters.enqueue();
         match self.tx.try_send(message(reply_tx)) {
             Ok(()) => Ok(reply_rx),
             Err(TrySendError::Full(_)) => {
-                stats.dequeue();
-                Stats::add(&stats.commands_busy);
+                counters.dequeue();
+                Stats::add(&counters.commands_busy);
                 Err(RuntimeError::Busy)
             }
             Err(TrySendError::Disconnected(_)) => {
-                stats.dequeue();
+                counters.dequeue();
                 Err(RuntimeError::NotRunning(self.shared.status()))
             }
         }

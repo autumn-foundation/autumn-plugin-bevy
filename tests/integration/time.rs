@@ -26,7 +26,7 @@ async fn manual_time_advances_by_fixed_step() {
         .with_world(|w| w.resource::<Time<Virtual>>().elapsed())
         .await
         .unwrap();
-    assert_eq!(after - first, step * 5);
+    assert_eq!(after.checked_sub(first).unwrap(), step * 5);
     runtime.shutdown().await.unwrap();
 }
 
@@ -50,7 +50,7 @@ async fn user_time_plugin_is_kept() {
         .await
         .unwrap();
     assert_eq!(
-        after - first,
+        after.checked_sub(first).unwrap(),
         Duration::from_millis(80),
         "the app strategy is kept"
     );

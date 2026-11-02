@@ -71,7 +71,10 @@ pub fn within<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> T + Send +
     match rx.recv_timeout(limit) {
         Ok(Ok(value)) => value,
         Ok(Err(panic)) => std::panic::resume_unwind(panic),
-        Err(_) => panic!("watchdog: the test did not end within {limit:?}"),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            panic!("watchdog: the test did not end within {limit:?}")
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watchdog: the test thread vanished"),
     }
 }
 

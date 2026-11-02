@@ -285,10 +285,8 @@ impl Section {
             .map(QueueCapacity::new)
             .transpose()?
             .unwrap_or_default();
-        let command_timeout = match millis("command_timeout_ms", self.command_timeout_ms)? {
-            Some(timeout) => Some(timeout),
-            None => defaults.command_timeout,
-        };
+        let command_timeout =
+            millis("command_timeout_ms", self.command_timeout_ms)?.or(defaults.command_timeout);
         Ok(BevyConfig {
             tick_mode,
             queue_capacity,
@@ -306,7 +304,7 @@ impl Section {
 }
 
 /// A duration key in milliseconds. Zero is an error.
-fn millis(key: &'static str, value: Option<u64>) -> Result<Option<Duration>, ConfigError> {
+const fn millis(key: &'static str, value: Option<u64>) -> Result<Option<Duration>, ConfigError> {
     match value {
         Some(0) => Err(ConfigError::ZeroDuration { key }),
         Some(ms) => Ok(Some(Duration::from_millis(ms))),

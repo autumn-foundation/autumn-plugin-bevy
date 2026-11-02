@@ -14,7 +14,7 @@ use crate::status::{RuntimeId, RuntimeStatus};
 
 /// Why the runtime failed. `wait_ready` maps it to an error.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Failure {
+pub enum Failure {
     /// Setup or the first update panicked. The text is the panic message.
     SetupPanicked(String),
     /// Setup and the first update did not finish in time.
@@ -29,7 +29,7 @@ pub(crate) enum Failure {
 
 /// Counters for health and metrics.
 #[derive(Debug, Default)]
-pub(crate) struct Stats {
+pub struct Stats {
     pub(crate) ticks: AtomicU64,
     pub(crate) overruns: AtomicU64,
     pub(crate) last_tick_nanos: AtomicU64,
@@ -69,7 +69,7 @@ impl Stats {
 
 /// The shared state of one runtime.
 #[derive(Debug)]
-pub(crate) struct Shared {
+pub struct Shared {
     pub(crate) id: RuntimeId,
     pub(crate) config: BevyConfig,
     pub(crate) stats: Stats,
@@ -156,9 +156,14 @@ impl Shared {
     /// Keeps the first failure. A later one is only logged.
     pub(crate) fn set_failure(&self, failure: Failure) {
         let mut slot = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
-        if slot.is_none() {
+        let ignored = if slot.is_none() {
             *slot = Some(failure);
+            None
         } else {
+            Some(failure)
+        };
+        drop(slot);
+        if let Some(failure) = ignored {
             tracing::debug!(runtime = %self.id, ?failure, "second bevy failure ignored");
         }
     }

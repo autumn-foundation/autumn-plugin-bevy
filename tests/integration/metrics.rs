@@ -27,9 +27,10 @@ fn value(families: &[MetricFamily], name: &str, outcome: Option<&str>) -> f64 {
     family
         .samples
         .iter()
-        .find(|s| match outcome {
-            None => s.labels.is_empty(),
-            Some(o) => s.labels.iter().any(|(k, v)| k == "outcome" && v == o),
+        .find(|s| {
+            outcome.map_or(s.labels.is_empty(), |o| {
+                s.labels.iter().any(|(k, v)| k == "outcome" && v == o)
+            })
         })
         .unwrap_or_else(|| panic!("no sample {name} {outcome:?}"))
         .value

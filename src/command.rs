@@ -10,7 +10,7 @@ use crate::error::RuntimeError;
 use crate::shared::Stats;
 
 /// One message in the command queue.
-pub(crate) enum Msg {
+pub enum Msg {
     /// Run a closure on the world.
     Run(Box<dyn Command>),
     /// Run `n` updates (`TickMode::Manual` only).
@@ -23,7 +23,7 @@ pub(crate) enum Msg {
 }
 
 /// A queued closure and its reply channel.
-pub(crate) trait Command: Send {
+pub trait Command: Send {
     /// Runs the closure, or skips it when the caller has gone. It counts the
     /// outcome before the reply, so a caller never sees an old count.
     fn run(self: Box<Self>, world: &mut World, stats: &Stats);
@@ -32,7 +32,7 @@ pub(crate) trait Command: Send {
 }
 
 /// A closure `f` and the channel for its result.
-pub(crate) struct Job<F, R> {
+pub struct Job<F, R> {
     pub(crate) f: F,
     pub(crate) reply: oneshot::Sender<Result<R, RuntimeError>>,
 }
@@ -70,7 +70,7 @@ where
 }
 
 /// The text of a panic payload.
-pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> String {
+pub fn panic_message(payload: &(dyn Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_owned())

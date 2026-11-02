@@ -68,9 +68,13 @@ impl BevyRuntime {
         if driver::on_runtime_thread(self.shared.id) {
             return Err(RuntimeError::Reentrant);
         }
-        // Hold the lock until the thread runs, so two calls cannot both start.
-        let mut slot = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(Pending { setup, rx }) = slot.take() else {
+        // `take` under the lock: of two calls, only one gets the parts.
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        let Some(Pending { setup, rx }) = pending else {
             return Err(RuntimeError::AlreadyStarted);
         };
         if self.shared.transition(Event::Start).is_none() {
@@ -221,11 +225,11 @@ where
     };
     let wait = Arc::new(wait);
     let on_pool = Arc::clone(&wait);
-    match runtime.spawn_blocking(move || on_pool()).await {
-        Ok(value) => value,
-        // The blocking pool shuts down. The wait has a limit, so do it here.
-        Err(_) => wait(),
-    }
+    // When the blocking pool shuts down, wait here. The wait has a limit.
+    runtime
+        .spawn_blocking(move || on_pool())
+        .await
+        .unwrap_or_else(|_| wait())
 }
 
 impl fmt::Debug for BevyRuntime {

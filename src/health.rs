@@ -28,17 +28,13 @@ pub struct BevyHealth {
 
 /// The result of a health check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Verdict {
+pub struct Verdict {
     pub(crate) up: bool,
     pub(crate) reason: Option<&'static str>,
 }
 
 /// The health rule. Pure, so that the tests can check each case.
-pub(crate) const fn evaluate(
-    status: RuntimeStatus,
-    busy_for: Duration,
-    threshold: Duration,
-) -> Verdict {
+pub const fn evaluate(status: RuntimeStatus, busy_for: Duration, threshold: Duration) -> Verdict {
     let reason = match status {
         RuntimeStatus::Running => {
             if busy_for.as_nanos() < threshold.as_nanos() {

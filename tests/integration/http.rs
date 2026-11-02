@@ -208,3 +208,51 @@ async fn setup_steps_run_in_order_with_config() {
         .assert_ok()
         .assert_body_eq("102");
 }
+
+// ── The extractor methods ───────────────────────────────────────────────────
+
+#[get("/step")]
+async fn step_route(bevy: Bevy) -> AutumnResult<String> {
+    let ticks = bevy.step(2).await?;
+    let status = bevy.status();
+    let again = bevy.ticks();
+    let typed = bevy.handle().clone();
+    let n = bevy
+        .with_world_timeout(Some(Duration::from_secs(5)), |w| w.entity_count())
+        .await?;
+    let inner = bevy.into_inner();
+    assert_eq!(inner.runtime_id(), typed.runtime_id());
+    // Bevy keeps its own entities in the world, so `n` is not zero.
+    assert!(n > 0);
+    Ok(format!("{ticks} {status} {again}"))
+}
+
+#[get("/step-fixed")]
+async fn step_fixed(bevy: Bevy) -> AutumnResult<String> {
+    bevy.step(1).await.map(|t| t.to_string())
+}
+
+#[tokio::test]
+async fn extractor_methods_map_results_and_errors() {
+    let manual_client = TestApp::new()
+        .plugin(BevyPlugin::new(|_app: &mut App| {}).config(manual()))
+        .routes(routes![step_route])
+        .build();
+    manual_client
+        .get("/step")
+        .send()
+        .await
+        .assert_ok()
+        .assert_body_eq("3 running 3");
+
+    // Fixed mode: step is a programming error, so the answer is 500.
+    let fixed_client = TestApp::new()
+        .plugin(BevyPlugin::new(|_app: &mut App| {}))
+        .routes(routes![step_fixed])
+        .build();
+    fixed_client
+        .get("/step-fixed")
+        .send()
+        .await
+        .assert_status(500);
+}

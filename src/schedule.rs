@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 /// On time, the next deadline is `prev + period`, so the phase does not
 /// drift. When late, the schedule skips the missed ticks and the next
 /// deadline is `now + period`, so there is no burst.
-pub(crate) fn next_deadline(prev: Instant, period: Duration, now: Instant) -> (Instant, u64) {
+pub fn next_deadline(prev: Instant, period: Duration, now: Instant) -> (Instant, u64) {
     let on_time = prev + period;
     if now < on_time {
         return (on_time, 0);
