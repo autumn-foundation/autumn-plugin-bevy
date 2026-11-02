@@ -60,6 +60,8 @@ where
             }
             Err(payload) => {
                 tracing::error!(panic = %panic_message(payload.as_ref()), "bevy command panicked");
+                // The payload is a user value too. Its drop can panic.
+                contain_drop(payload);
                 Stats::add(&stats.commands_panicked);
                 let _ = reply.send(Err(RuntimeError::CommandPanicked));
             }
@@ -75,7 +77,7 @@ where
 
 /// Drops `value` and contains a panic in its `Drop`. User values drop on the
 /// Bevy thread, and a panic there must not end the thread.
-fn contain_drop<T>(value: T) {
+pub fn contain_drop<T>(value: T) {
     if let Err(payload) = catch_unwind(AssertUnwindSafe(move || drop(value))) {
         tracing::error!(panic = %panic_message(payload.as_ref()), "a bevy command value panicked in its drop");
     }

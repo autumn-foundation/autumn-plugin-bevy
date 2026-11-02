@@ -163,9 +163,10 @@ pub open spec fn inv(r: Rt) -> bool {
     // The failed flag is set only on the way down, and it decides the end.
     &&& (r.failed ==> r.status >= stopping())
     &&& (r.status == failed() ==> r.failed)
-    &&& (r.status == stopped() ==> !r.failed)
-    // A recorded failure keeps the runtime out of Running.
-    &&& (r.doomed ==> r.status != running())
+    &&& (r.status == stopped() ==> !r.failed && !r.doomed)
+    // A recorded failure comes only after the start, and it keeps the
+    // runtime out of Running.
+    &&& (r.doomed ==> r.status != not_started() && r.status != running())
     &&& (r.flushed ==> r.status >= stopping())
     &&& (r.due ==> r.status == running())
 }
@@ -272,10 +273,10 @@ pub open spec fn stop(r: Rt) -> Rt {
     }
 }
 
-/// The last graceful update in Stopping, once, and only with no failure. It
-/// can panic: then `failed` becomes true.
+/// The last graceful update in Stopping, once, and only with no failure and
+/// no recorded failure. It can panic: then `failed` becomes true.
 pub open spec fn final_update_enabled(r: Rt) -> bool {
-    r.status == stopping() && !r.failed && !r.flushed
+    r.status == stopping() && !r.failed && !r.doomed && !r.flushed
 }
 
 pub open spec fn final_update(r: Rt, panics: bool) -> Rt {
@@ -287,13 +288,15 @@ pub open spec fn drain_one(r: Rt) -> Rt {
     Rt { queued: (r.queued - 1) as nat, replied: r.replied + 1, ..r }
 }
 
-/// The drain is done and the channel is closed.
-pub open spec fn finish(r: Rt) -> Rt {
-    Rt { status: if r.failed { failed() } else { stopped() }, ..r }
+/// The drain is done, the channel is closed, and the app drops. The drop can
+/// panic. A failure, a recorded failure or a drop panic gives Failed.
+pub open spec fn finish(r: Rt, drop_panics: bool) -> Rt {
+    let end_failed = r.failed || r.doomed || drop_panics;
+    Rt { status: if end_failed { failed() } else { stopped() }, failed: end_failed, ..r }
 }
 
 /// Every step keeps the invariant, when it is enabled.
-pub proof fn steps_keep_the_invariant(r: Rt, k: nat, panics: bool)
+pub proof fn steps_keep_the_invariant(r: Rt, k: nat, panics: bool, drop_panics: bool)
     requires
         inv(r),
     ensures
@@ -311,7 +314,7 @@ pub proof fn steps_keep_the_invariant(r: Rt, k: nat, panics: bool)
         ),
         final_update_enabled(r) ==> inv(final_update(r, panics)),
         (r.status == stopping() && r.queued > 0) ==> inv(drain_one(r)),
-        (r.status == stopping() && r.queued == 0) ==> inv(finish(r)),
+        (r.status == stopping() && r.queued == 0) ==> inv(finish(r, drop_panics)),
 {}
 
 /// I4: a refused submit changes nothing, and the channel refuses only when
@@ -334,7 +337,7 @@ pub proof fn no_command_is_lost(r: Rt)
 
 /// I8: no step makes the count go down. A tick and the boot update add one,
 /// a step adds its updates, and the last graceful update adds one.
-pub proof fn ticks_never_go_down(r: Rt, k: nat, panics: bool)
+pub proof fn ticks_never_go_down(r: Rt, k: nat, panics: bool, drop_panics: bool)
     requires
         inv(r),
     ensures
@@ -347,12 +350,12 @@ pub proof fn ticks_never_go_down(r: Rt, k: nat, panics: bool)
         fail(r).ticks == r.ticks,
         stop(r).ticks == r.ticks,
         drain_one(r).ticks == r.ticks,
-        finish(r).ticks == r.ticks,
+        finish(r, drop_panics).ticks == r.ticks,
 {}
 
 /// I10: after a failure, no update and no command runs, and the end is
 /// Failed. A recorded failure blocks Running.
-pub proof fn no_work_after_failure(r: Rt)
+pub proof fn no_work_after_failure(r: Rt, drop_panics: bool)
     requires
         inv(r),
         r.failed,
@@ -360,16 +363,27 @@ pub proof fn no_work_after_failure(r: Rt)
         !tick_enabled(r),
         !exec_enabled(r),
         !final_update_enabled(r),
-        r.status == stopping() ==> finish(r).status == failed(),
+        r.status == stopping() ==> finish(r, drop_panics).status == failed(),
 {}
 
-pub proof fn a_recorded_failure_blocks_running(r: Rt)
+pub proof fn a_recorded_failure_blocks_running(r: Rt, drop_panics: bool)
     requires
         inv(r),
         r.doomed,
     ensures
         !ready_enabled(r),
         r.status != running(),
+        !final_update_enabled(r),
+        r.status == stopping() ==> finish(r, drop_panics).status == failed(),
+{}
+
+/// A clean stop ends Failed when the drop of the app panics.
+pub proof fn a_drop_panic_ends_failed(r: Rt)
+    requires
+        inv(r),
+        r.status == stopping(),
+    ensures
+        finish(r, true).status == failed(),
 {}
 
 /// I11: the health check is up only in Running.

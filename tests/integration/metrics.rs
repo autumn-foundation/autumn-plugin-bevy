@@ -90,7 +90,8 @@ async fn metrics_count_ticks_and_commands() {
 
     let after = metrics.collect();
     assert!((value(&after, "bevy_ticks_total", None) - ticks_before - 2.0).abs() < f64::EPSILON);
-    assert!((value(&after, "bevy_commands_total", Some("ok")) - 3.0).abs() < f64::EPSILON);
+    // Three commands and one finished step.
+    assert!((value(&after, "bevy_commands_total", Some("ok")) - 4.0).abs() < f64::EPSILON);
     assert!((value(&after, "bevy_commands_total", Some("panicked")) - 1.0).abs() < f64::EPSILON);
     assert!(value(&after, "bevy_queue_depth", None).abs() < f64::EPSILON);
     assert!((value(&after, "bevy_up", None) - 1.0).abs() < f64::EPSILON);

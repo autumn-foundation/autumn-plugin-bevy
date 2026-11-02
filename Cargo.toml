@@ -16,8 +16,8 @@ exclude = ["/.github", "/verification", "/scripts"]
 # No default features: the plugin needs only the core plugin API. The app
 # turns on the autumn-web features that it uses.
 autumn-web = { version = "0.9", default-features = false }
-# `bevy_app` and `bevy_ecs` only. The `bevy` crate adds rendering and needs
-# Rust 1.97.1.
+# `bevy_app`, `bevy_ecs`, `bevy_tasks`, and `bevy_time` with the `time`
+# feature. The `bevy` crate adds rendering and needs Rust 1.97.1.
 bevy_app = { version = "0.20.1", default-features = false, features = ["std"] }
 bevy_ecs = { version = "0.20.1", default-features = false, features = ["std"] }
 bevy_tasks = { version = "0.20.1", default-features = false, features = ["async_executor"] }

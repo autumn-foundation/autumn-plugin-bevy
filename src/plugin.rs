@@ -122,14 +122,7 @@ impl Plugin for BevyPlugin {
             .on_startup(move |_state| {
                 let runtime = Arc::clone(&on_start);
                 let config_error = config_error.clone();
-                async move {
-                    if let Some(err) = config_error {
-                        return Err(AutumnError::internal_server_error_msg(format!(
-                            "bevy runtime did not start: {err}"
-                        )));
-                    }
-                    start(&runtime).await
-                }
+                async move { start_or_fail(&runtime, config_error).await }
             })
             .on_shutdown(move || {
                 let runtime = Arc::clone(&on_stop);
@@ -155,8 +148,22 @@ fn resolve_config(
     )
 }
 
-/// The startup hook: start the thread and wait for the first update. An
-/// error stops the boot of the server.
+/// The startup hook. A bad `[bevy]` table stops the boot before the thread
+/// starts.
+async fn start_or_fail(
+    runtime: &BevyRuntime,
+    config_error: Option<ConfigError>,
+) -> AutumnResult<()> {
+    if let Some(err) = config_error {
+        return Err(AutumnError::internal_server_error_msg(format!(
+            "bevy runtime did not start: {err}"
+        )));
+    }
+    start(runtime).await
+}
+
+/// Start the thread and wait for the first update. An error stops the boot
+/// of the server.
 async fn start(runtime: &BevyRuntime) -> AutumnResult<()> {
     match runtime.start() {
         Ok(()) | Err(RuntimeError::AlreadyStarted) => {}
@@ -213,6 +220,25 @@ mod tests {
         let (config, err) = resolve_config(None, || Err(ConfigError::TickRate(0)));
         assert_eq!(config, BevyConfig::default());
         assert_eq!(err, Some(ConfigError::TickRate(0)));
+    }
+
+    #[tokio::test]
+    async fn a_bad_table_stops_the_boot_and_names_the_key() {
+        let err = BevyConfig::from_toml_str("[bevy]\ntick_hertz = 30\n").unwrap_err();
+        let runtime = BevyRuntime::new(manual(), |_app| {});
+        let boot = start_or_fail(&runtime, Some(err)).await.unwrap_err();
+        assert!(boot.to_string().contains("tick_hertz"), "{boot}");
+        assert_eq!(
+            runtime.status(),
+            RuntimeStatus::NotStarted,
+            "the thread does not start"
+        );
+
+        start_or_fail(&runtime, None)
+            .await
+            .expect("no error: the boot goes on");
+        assert_eq!(runtime.status(), RuntimeStatus::Running);
+        stop(&runtime).await;
     }
 
     #[tokio::test]

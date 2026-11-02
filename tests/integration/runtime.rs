@@ -180,8 +180,10 @@ async fn full_queue_returns_busy_without_waiting() {
     let started = Instant::now();
     let err = handle.with_world(|_w| ()).await.unwrap_err();
     assert!(matches!(err, RuntimeError::Busy), "{err:?}");
+    // Busy comes at once. The bound is wide for slow runners; the gate holds
+    // the thread for seconds, so a wait would show.
     assert!(
-        started.elapsed() < Duration::from_millis(50),
+        started.elapsed() < Duration::from_millis(500),
         "{:?}",
         started.elapsed()
     );
@@ -581,6 +583,10 @@ async fn queued_commands_resolve_on(path: StopPath) {
         drop(runtime);
         None
     };
+    if matches!(path, StopPath::Shutdown) {
+        // The stop's wake message shows that the stop flag is set.
+        assert!(eventually(Duration::from_secs(5), || handle.queue_depth() == 9).await);
+    }
     // Let the deadline pass, so the next loop pass runs an update first.
     tokio::time::sleep(Duration::from_millis(30)).await;
 

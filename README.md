@@ -258,18 +258,20 @@ let plugin = BevyPlugin::new(|_app| {}).config(config);
 | `tick_mode` | `"fixed"` | `"fixed"`, `"manual"` |
 | `tick_hz` | 60 | 1 to 1000 |
 | `queue_capacity` | 1024 | 1 to 65536 |
-| `command_timeout_ms` | 5000 | 1 or more |
-| `startup_timeout_ms` | 10000 | 1 or more |
-| `stall_threshold_ms` | 1000 | 1 or more |
-| `shutdown_timeout_ms` | 5000 | 1 or more |
-| `manual_time_step_ms` | 1/60 s | 1 or more |
+| `command_timeout_ms` | 5000 | 1 to 86400000 |
+| `startup_timeout_ms` | 10000 | 1 to 86400000 |
+| `stall_threshold_ms` | 1000 | 1 to 86400000 |
+| `shutdown_timeout_ms` | 5000 | 1 to 86400000 |
+| `manual_time_step_ms` | 1/60 s | 1 to 86400000 |
 
 - A duration is 1 ms to 24 hours (`MAX_DURATION`). A setter takes any
   value, so `BevyRuntime::start` checks the values again
   (`BevyConfig::validate`) and fails with `InvalidConfig`.
 - An unknown key is an error. The error names the key.
 - The plugin declares `[bevy]`, so `server.strict_config = true` accepts it.
-- Profile files and `AUTUMN_*` variables do not apply to this table.
+- Profile files and `AUTUMN_*` variables do not apply to this table. A
+  custom Autumn config loader (`with_config_loader`) does not change the
+  file that the plugin reads.
 - `.config(..)` on the plugin turns off the read of the table.
 - A setter after `load` or `load_default` changes the loaded value.
 
@@ -323,6 +325,10 @@ The label values are fixed, so the metrics cannot grow without limit.
 the same command as `cancelled` (it did not start), or as `ok` or
 `panicked` (it ran). So the outcomes can overlap.
 
+A `step(n)` counts as `ok` when one or more of its updates ran, as
+`cancelled` when its caller left before the first update, and as `rejected`
+when a stop or a failure ended it.
+
 ## Tests
 
 `TestApp` runs the startup hook of the plugin. So the world is ready when
@@ -343,7 +349,9 @@ assert_eq!(ticks, 4); // The first update, then three steps.
 ```
 
 Use `BevyConfig::manual()` and `step(n)` for tests that must give the same
-result each time. For tests with a paused tokio clock, set
+result each time. Give the config in code (`.config(..)`) in tests. With no
+config in code, the plugin reads the `autumn.toml` of the crate, also under
+`TestApp`, which itself does not read that file. For tests with a paused tokio clock, set
 `with_command_timeout(None)`. The Bevy thread is a real thread and does not
 follow the paused clock.
 
@@ -360,8 +368,8 @@ follow the paused clock.
   warning at start.
 - Register `BevyPlugin` after the Autumn plugins that its systems use.
 - Setup must not call `App::run`: that call replaces the app with an empty
-  one. The boot then fails with `InvalidSetup`. The plugin never calls the
-  runner of the app.
+  one. The boot then fails with `InvalidSetup`. Setup can put a new
+  `App::new()` in place. The plugin never calls the runner of the app.
 
 ## Verification
 

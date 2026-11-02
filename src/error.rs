@@ -62,7 +62,8 @@ pub enum RuntimeError {
 }
 
 impl RuntimeError {
-    /// The HTTP status for this error: 503 when a retry can help, else 500.
+    /// The HTTP status for this error: 503 when the queue is full, the runtime
+    /// does not run, or a wait limit passed; 500 for a bug in the app.
     #[must_use]
     pub const fn status_code(&self) -> StatusCode {
         if self.is_unavailable() {

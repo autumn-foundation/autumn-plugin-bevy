@@ -12,11 +12,10 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use bevy_app::{App, AppExit, PluginsState};
-use bevy_ecs::resource::Resource;
+use bevy_app::{App, AppExit, MainSchedulePlugin, PluginsState};
 
 use crate::Setup;
-use crate::command::{Msg, panic_message};
+use crate::command::{Msg, contain_drop, panic_message};
 use crate::config::{BevyConfig, TickMode};
 use crate::error::RuntimeError;
 use crate::lifecycle::Event;
@@ -54,11 +53,6 @@ pub fn spawn(shared: Arc<Shared>, setup: Setup, rx: Receiver<Msg>) -> io::Result
         })
         .map(drop)
 }
-
-/// A marker that setup must keep. `App::run` replaces the app with an empty
-/// one, and the marker then is gone.
-#[derive(Resource)]
-struct SetupMarker;
 
 /// What the loop does next.
 enum Flow {
@@ -136,13 +130,14 @@ impl Driver {
         let deadline = Instant::now().checked_add(config.startup_timeout);
         let built = catch_unwind(AssertUnwindSafe(|| {
             let mut app = App::new();
-            app.insert_resource(SetupMarker);
             setup(&mut app);
-            let kept = app.world_mut().remove_resource::<SetupMarker>().is_some();
-            if kept {
+            // `App::run` leaves `App::empty()` behind: an app with no main
+            // schedule. A setup that puts a new `App::new()` in place is fine.
+            let drivable = app.is_plugin_added::<MainSchedulePlugin>();
+            if drivable {
                 add_time(&mut app, config);
             }
-            (app, kept)
+            (app, drivable)
         }));
         let mut app = match built {
             Ok((app, true)) => app,
@@ -154,7 +149,7 @@ impl Driver {
                     )),
                 );
             }
-            Err(payload) => return (None, setup_panic(payload.as_ref())),
+            Err(payload) => return (None, setup_panic(payload)),
         };
         loop {
             if self.shared.stop_requested() {
@@ -169,11 +164,11 @@ impl Driver {
                         app.cleanup();
                     }));
                     if let Err(payload) = done {
-                        return (Some(app), setup_panic(payload.as_ref()));
+                        return (Some(app), setup_panic(payload));
                     }
                     break;
                 }
-                Err(payload) => return (Some(app), setup_panic(payload.as_ref())),
+                Err(payload) => return (Some(app), setup_panic(payload)),
             }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 return (
@@ -255,21 +250,31 @@ impl Driver {
             Msg::Step { n, reply } => {
                 // One step is one piece of work, so the stall rule sees all
                 // of it. Before each update, read the stop flag and the caller.
-                for _ in 0..n {
+                // Outcomes: `cancelled` when no update ran, `ok` when at least
+                // one ran, `rejected` when a stop or a failure ended it.
+                for done in 0..n {
                     if reply.is_closed() {
-                        Stats::add(&stats.commands_cancelled);
+                        let counter = if done == 0 {
+                            &stats.commands_cancelled
+                        } else {
+                            &stats.commands_ok
+                        };
+                        Stats::add(counter);
                         return Flow::Continue;
                     }
                     if self.shared.stop_requested() {
+                        Stats::add(&stats.commands_rejected);
                         let _ = reply.send(Err(RuntimeError::NotRunning(RuntimeStatus::Stopping)));
                         return Flow::Stop;
                     }
                     let flow = self.update(app);
                     if !is_continue(&flow) {
+                        Stats::add(&stats.commands_rejected);
                         let _ = reply.send(Err(RuntimeError::NotRunning(RuntimeStatus::Stopping)));
                         return flow;
                     }
                 }
+                Stats::add(&stats.commands_ok);
                 let _ = reply.send(Ok(Stats::get(&stats.ticks)));
                 Flow::Continue
             }
@@ -288,6 +293,7 @@ impl Driver {
         stats.last_tick_nanos.store(nanos, Ordering::Relaxed);
         if let Err(payload) = result {
             let message = panic_message(payload.as_ref());
+            contain_drop(payload);
             tracing::error!(runtime = %self.shared.id, panic = %message, "bevy update panicked");
             return Flow::Fail(Failure::UpdatePanicked(message));
         }
@@ -359,8 +365,9 @@ impl Driver {
     }
 }
 
-fn setup_panic(payload: &(dyn std::any::Any + Send)) -> Flow {
-    let message = panic_message(payload);
+fn setup_panic(payload: Box<dyn std::any::Any + Send>) -> Flow {
+    let message = panic_message(payload.as_ref());
+    contain_drop(payload);
     tracing::error!(panic = %message, "bevy setup panicked");
     Flow::Fail(Failure::SetupPanicked(message))
 }

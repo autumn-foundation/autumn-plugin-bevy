@@ -209,8 +209,9 @@ impl fmt::Debug for BevyHandle {
 /// }
 /// ```
 ///
-/// Its methods return [`AutumnResult`] with a safe HTTP error: 503 when a
-/// retry can help, 500 for the other errors, and a fixed body. Outside a
+/// Its methods return [`AutumnResult`] with a safe HTTP error: 503 when the
+/// queue is full, the runtime does not run, or a wait limit passed; 500 for
+/// the other errors; and a fixed body. Outside a
 /// dev profile, Autumn replaces the body detail of a 5xx with its own text. Use [`Bevy::handle`] to get
 /// the typed [`RuntimeError`].
 ///

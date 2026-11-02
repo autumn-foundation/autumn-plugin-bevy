@@ -26,13 +26,16 @@ of autumn-web 0.9 matter here:
 | A system writes `AppExit::Success` | The status becomes `Stopped`. |
 | A system writes `AppExit::Error` | The status becomes `Failed`. |
 | Setup panics, or the first update is late | The startup hook fails, so the server does not start. |
+| A config value is out of range | `start` fails with `InvalidConfig`. The status stays `NotStarted`. |
+| Setup calls `App::run` | The startup hook fails with `InvalidSetup`. The status becomes `Failed`. |
 | Shutdown is late | `shutdown` returns `ShutdownTimeout`. The hook logs it. The thread stops later. |
 
 HTTP errors:
 
 1. The `Bevy` extractor methods return `AutumnResult`. They map each error
    with `RuntimeError::into_autumn_error`.
-2. The status is 503 when a retry can help, and 500 for the other errors.
+2. The status is 503 when the queue is full, the runtime does not run, or a
+   wait limit passed. It is 500 for a bug in the app.
 3. The body text is fixed: "bevy runtime is busy", "bevy runtime is
    unavailable" or "internal error". Panic text goes to the log only.
 4. `BevyHandle` returns the typed `RuntimeError` for code that is not a

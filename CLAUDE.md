@@ -19,9 +19,10 @@ An Autumn plugin that runs one headless Bevy app on its own thread. Read
 - **Never bump the version** in `Cargo.toml` unless the user asks for a
   release. Write the change in `CHANGELOG.md` under `## [Unreleased]`.
 - **The thread rule.** Only the `autumn-bevy` thread touches the `App` and
-  the `World` (`src/driver.rs`). The async side sends messages. In a tokio
-  runtime, a wait goes through `spawn_blocking`. With no runtime, or when the
-  blocking pool shuts down, the wait runs on the caller thread, with a limit.
+  the `World` (`src/driver.rs`). The async side sends messages and never
+  blocks a tokio worker. `wait_ready` and `shutdown` wait in `spawn_blocking`,
+  with a limit; with no tokio runtime they wait on the caller thread. A
+  handle call awaits a oneshot reply; with no tokio runtime it has no limit.
 - **The lifecycle rule.** A status changes only through `lifecycle::next`
   (in `Shared::apply`). A change to the lifecycle, the queue or the tick
   schedule needs the same change in the Verus model. Then change the tests.

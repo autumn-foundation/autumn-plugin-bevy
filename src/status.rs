@@ -22,7 +22,7 @@ pub enum RuntimeStatus {
     /// The runtime stopped with no failure.
     Stopped,
     /// The runtime stopped after a failure: a panic, `AppExit::Error`, a
-    /// startup timeout or a spawn error.
+    /// startup timeout, an invalid setup or a spawn error.
     Failed,
 }
 
