@@ -432,7 +432,9 @@ async fn r01_setup_that_replaces_the_app_boots() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r03_step_outcomes_are_counted() {
-    let config = manual().with_command_timeout(Some(Duration::from_millis(100)));
+    // The limit must cover two slow updates on a slow runner (a 5 ms sleep
+    // can take much longer on macOS), and still end the million-step call.
+    let config = manual().with_command_timeout(Some(Duration::from_secs(1)));
     let runtime = ready(BevyRuntime::new(config, slow_updates)).await;
     let handle = runtime.handle();
     handle.step(2).await.unwrap();
