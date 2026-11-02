@@ -1,0 +1,131 @@
+name: CI
+
+# fmt, then clippy, the tests on three systems, coverage, the MSRV check and
+# the docs. Branch protection requires one check: `CI gate`.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    needs: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2.7.8
+      # pedantic and nursery are on in Cargo.toml. unwrap, expect and panic
+      # are denied outside tests.
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    needs: fmt
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2.7.8
+      - name: Test with default features
+        run: cargo test --locked --all-targets
+      - name: Test the doc examples
+        run: cargo test --locked --doc
+      - name: Test with no default features
+        run: cargo test --locked --all-targets --no-default-features
+
+  coverage:
+    name: Coverage
+    needs: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2.7.8
+      - uses: taiki-e/install-action@v2.87.31
+        with:
+          tool: cargo-llvm-cov
+      - name: Line coverage of 85 percent or more
+        run: cargo llvm-cov --locked --all-features --fail-under-lines 85 --lcov --output-path lcov.info
+      - uses: actions/upload-artifact@v7
+        with:
+          name: lcov
+          path: lcov.info
+
+  msrv:
+    name: MSRV (1.95)
+    needs: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2.7.8
+      - run: cargo check --locked --all-targets --all-features
+
+  docs:
+    name: Docs
+    needs: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2.7.8
+      - run: cargo doc --locked --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  ci-gate:
+    name: CI gate
+    if: always()
+    needs: [fmt, clippy, test, coverage, msrv, docs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: All required jobs passed
+        env:
+          NOT_PASSED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        run: |
+          echo "results: ${{ join(needs.*.result, ', ') }}"
+          if [ "$NOT_PASSED" = "true" ]; then
+            echo "::error::a required job did not pass"
+            exit 1
+          fi
