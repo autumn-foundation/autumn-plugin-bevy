@@ -675,7 +675,9 @@ fn concurrent_calls_do_not_block_reactor() {
     let (done, beats, elapsed) = current_thread(Duration::from_mins(1), || async {
         let config = BevyConfig::default()
             .with_tick_mode(TickMode::Fixed(TickRate::new(100).unwrap()))
-            .with_command_timeout(Some(Duration::from_secs(20)));
+            // The watchdog bounds the test. A per-call limit would only
+            // measure the speed of the runner.
+            .with_command_timeout(None);
         let runtime = ready(BevyRuntime::new(config, |app: &mut App| {
             counting(app);
             app.add_systems(Update, || std::thread::sleep(Duration::from_millis(20)));
@@ -699,9 +701,13 @@ fn concurrent_calls_do_not_block_reactor() {
             let h = handle.clone();
             set.spawn(async move {
                 h.with_world(move |_w| {
-                    // Hold the Bevy thread, so the calls are in flight for
-                    // seconds.
-                    std::thread::sleep(Duration::from_millis(1));
+                    // Hold the Bevy thread for 1 ms, so the calls are in
+                    // flight for seconds. Spin, not sleep: the timer of a
+                    // macOS runner can make a 1 ms sleep many times longer.
+                    let held = Instant::now();
+                    while held.elapsed() < Duration::from_millis(1) {
+                        std::hint::spin_loop();
+                    }
                     i
                 })
                 .await
