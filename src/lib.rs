@@ -7,6 +7,7 @@ pub use bevy_time;
 
 mod command;
 mod config;
+mod driver;
 mod error;
 mod handle;
 mod health;

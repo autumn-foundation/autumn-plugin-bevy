@@ -4,6 +4,8 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::Path;
 use std::time::Duration;
 
+use serde::Deserialize;
+
 use crate::error::ConfigError;
 
 /// Updates per second in [`TickMode::Fixed`]. The range is `1..=1000`.
@@ -22,8 +24,12 @@ impl TickRate {
     ///
     /// [`ConfigError::TickRate`] when `hz` is 0 or more than [`Self::MAX_HZ`].
     pub fn new(hz: u32) -> Result<Self, ConfigError> {
-        let _ = hz;
-        Err(ConfigError::TickRate(hz))
+        if hz > Self::MAX_HZ {
+            return Err(ConfigError::TickRate(hz));
+        }
+        NonZeroU32::new(hz)
+            .map(Self)
+            .ok_or(ConfigError::TickRate(hz))
     }
 
     /// Updates per second.
@@ -34,8 +40,8 @@ impl TickRate {
 
     /// The time between two updates.
     #[must_use]
-    pub const fn period(self) -> Duration {
-        Duration::ZERO
+    pub fn period(self) -> Duration {
+        Duration::from_nanos(1_000_000_000 / u64::from(self.0.get()))
     }
 }
 
@@ -61,7 +67,12 @@ impl QueueCapacity {
     ///
     /// [`ConfigError::QueueCapacity`] when `n` is 0 or more than [`Self::MAX`].
     pub fn new(n: usize) -> Result<Self, ConfigError> {
-        Err(ConfigError::QueueCapacity(n))
+        if n > Self::MAX {
+            return Err(ConfigError::QueueCapacity(n));
+        }
+        NonZeroUsize::new(n)
+            .map(Self)
+            .ok_or(ConfigError::QueueCapacity(n))
     }
 
     /// The capacity.
@@ -141,7 +152,10 @@ impl BevyConfig {
     /// The defaults with [`TickMode::Manual`].
     #[must_use]
     pub fn manual() -> Self {
-        Self::default()
+        Self {
+            tick_mode: TickMode::Manual,
+            ..Self::default()
+        }
     }
 
     /// Reads the `[bevy]` table of a full `autumn.toml` text. With no table,
@@ -152,8 +166,13 @@ impl BevyConfig {
     /// [`ConfigError`] for a TOML error, an unknown key, or a value out of
     /// range. The error names the key.
     pub fn from_toml_str(autumn_toml: &str) -> Result<Self, ConfigError> {
-        let _ = autumn_toml;
-        Err(ConfigError::Parse(String::new()))
+        // Parse the whole text. Then a TOML error shows the source line,
+        // and so it names the key.
+        let document: Document =
+            toml::from_str(autumn_toml).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        document
+            .bevy
+            .map_or_else(|| Ok(Self::default()), Section::into_config)
     }
 
     /// Reads the `[bevy]` table of the `autumn.toml` file at `path`. A
@@ -164,57 +183,134 @@ impl BevyConfig {
     /// [`ConfigError::Read`] when the file exists but cannot be read, and the
     /// errors of [`BevyConfig::from_toml_str`].
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
-        let _ = path.as_ref();
-        Err(ConfigError::Parse(String::new()))
+        let path = path.as_ref();
+        match std::fs::read_to_string(path) {
+            Ok(text) => Self::from_toml_str(&text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(ConfigError::Read {
+                path: path.display().to_string(),
+                message: e.to_string(),
+            }),
+        }
     }
 
     /// Sets [`BevyConfig::tick_mode`].
     #[must_use]
-    pub const fn with_tick_mode(self, mode: TickMode) -> Self {
-        let _ = mode;
+    pub const fn with_tick_mode(mut self, mode: TickMode) -> Self {
+        self.tick_mode = mode;
         self
     }
 
     /// Sets [`BevyConfig::queue_capacity`].
     #[must_use]
-    pub const fn with_queue_capacity(self, capacity: QueueCapacity) -> Self {
-        let _ = capacity;
+    pub const fn with_queue_capacity(mut self, capacity: QueueCapacity) -> Self {
+        self.queue_capacity = capacity;
         self
     }
 
     /// Sets [`BevyConfig::command_timeout`]. `None` waits with no limit.
     #[must_use]
-    pub const fn with_command_timeout(self, timeout: Option<Duration>) -> Self {
-        let _ = timeout;
+    pub const fn with_command_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.command_timeout = timeout;
         self
     }
 
     /// Sets [`BevyConfig::startup_timeout`].
     #[must_use]
-    pub const fn with_startup_timeout(self, timeout: Duration) -> Self {
-        let _ = timeout;
+    pub const fn with_startup_timeout(mut self, timeout: Duration) -> Self {
+        self.startup_timeout = timeout;
         self
     }
 
     /// Sets [`BevyConfig::stall_threshold`].
     #[must_use]
-    pub const fn with_stall_threshold(self, threshold: Duration) -> Self {
-        let _ = threshold;
+    pub const fn with_stall_threshold(mut self, threshold: Duration) -> Self {
+        self.stall_threshold = threshold;
         self
     }
 
     /// Sets [`BevyConfig::shutdown_timeout`].
     #[must_use]
-    pub const fn with_shutdown_timeout(self, timeout: Duration) -> Self {
-        let _ = timeout;
+    pub const fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
+        self.shutdown_timeout = timeout;
         self
     }
 
     /// Sets [`BevyConfig::manual_time_step`].
     #[must_use]
-    pub const fn with_manual_time_step(self, step: Duration) -> Self {
-        let _ = step;
+    pub const fn with_manual_time_step(mut self, step: Duration) -> Self {
+        self.manual_time_step = step;
         self
+    }
+}
+
+/// An `autumn.toml` document, seen only through its `[bevy]` table.
+#[derive(Debug, Deserialize)]
+struct Document {
+    bevy: Option<Section>,
+}
+
+/// The `[bevy]` table. Each key is optional. An unknown key is an error, so
+/// a typo does not go unseen.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Section {
+    tick_mode: Option<ModeName>,
+    tick_hz: Option<u32>,
+    queue_capacity: Option<usize>,
+    command_timeout_ms: Option<u64>,
+    startup_timeout_ms: Option<u64>,
+    stall_threshold_ms: Option<u64>,
+    shutdown_timeout_ms: Option<u64>,
+    manual_time_step_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ModeName {
+    Fixed,
+    Manual,
+}
+
+impl Section {
+    fn into_config(self) -> Result<BevyConfig, ConfigError> {
+        let defaults = BevyConfig::default();
+        let rate = self.tick_hz.map(TickRate::new).transpose()?;
+        let tick_mode = match self.tick_mode.unwrap_or(ModeName::Fixed) {
+            ModeName::Fixed => TickMode::Fixed(rate.unwrap_or_default()),
+            ModeName::Manual => TickMode::Manual,
+        };
+        let queue_capacity = self
+            .queue_capacity
+            .map(QueueCapacity::new)
+            .transpose()?
+            .unwrap_or_default();
+        let command_timeout = match millis("command_timeout_ms", self.command_timeout_ms)? {
+            Some(timeout) => Some(timeout),
+            None => defaults.command_timeout,
+        };
+        Ok(BevyConfig {
+            tick_mode,
+            queue_capacity,
+            command_timeout,
+            startup_timeout: millis("startup_timeout_ms", self.startup_timeout_ms)?
+                .unwrap_or(defaults.startup_timeout),
+            stall_threshold: millis("stall_threshold_ms", self.stall_threshold_ms)?
+                .unwrap_or(defaults.stall_threshold),
+            shutdown_timeout: millis("shutdown_timeout_ms", self.shutdown_timeout_ms)?
+                .unwrap_or(defaults.shutdown_timeout),
+            manual_time_step: millis("manual_time_step_ms", self.manual_time_step_ms)?
+                .unwrap_or(defaults.manual_time_step),
+        })
+    }
+}
+
+/// A duration key in milliseconds. Zero is an error.
+fn millis(key: &'static str, value: Option<u64>) -> Result<Option<Duration>, ConfigError> {
+    match value {
+        Some(0) => Err(ConfigError::ZeroDuration { key }),
+        Some(ms) => Ok(Some(Duration::from_millis(ms))),
+        None => Ok(None),
     }
 }
 

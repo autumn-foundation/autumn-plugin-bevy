@@ -38,35 +38,51 @@ impl RuntimeStatus {
     /// `true` for `Stopped` and `Failed`. No status comes after these.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        let _ = self;
-        false
+        matches!(self, Self::Stopped | Self::Failed)
     }
 
     /// `true` when a new command can go into the queue: `Starting` and
     /// `Running`.
     #[must_use]
     pub const fn accepts_commands(self) -> bool {
-        let _ = self;
-        false
+        matches!(self, Self::Starting | Self::Running)
     }
 
     /// The `snake_case` name. Health details and logs use it.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
-        let _ = self;
-        ""
+        match self {
+            Self::NotStarted => "not_started",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
     }
 
     /// The code that the lock-free status mirror stores.
     pub(crate) const fn to_u8(self) -> u8 {
-        let _ = self;
-        0
+        match self {
+            Self::NotStarted => 0,
+            Self::Starting => 1,
+            Self::Running => 2,
+            Self::Stopping => 3,
+            Self::Stopped => 4,
+            Self::Failed => 5,
+        }
     }
 
     /// The reverse of [`Self::to_u8`]. An unknown code gives `Failed`.
     pub(crate) const fn from_u8(code: u8) -> Self {
-        let _ = code;
-        Self::NotStarted
+        match code {
+            0 => Self::NotStarted,
+            1 => Self::Starting,
+            2 => Self::Running,
+            3 => Self::Stopping,
+            4 => Self::Stopped,
+            _ => Self::Failed,
+        }
     }
 }
 

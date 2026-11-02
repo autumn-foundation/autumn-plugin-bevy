@@ -58,13 +58,36 @@ impl RuntimeError {
     /// The HTTP status for this error: 503 when a retry can help, else 500.
     #[must_use]
     pub const fn status_code(&self) -> StatusCode {
-        StatusCode::OK
+        if self.is_retryable() {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     }
 
     /// The fixed text for an HTTP body. It has no internal data.
     #[must_use]
     pub const fn public_message(&self) -> &'static str {
-        ""
+        match self {
+            Self::Busy => "bevy runtime is busy",
+            _ if self.is_retryable() => "bevy runtime is unavailable",
+            _ => "internal error",
+        }
+    }
+
+    /// `true` when the same call can work later: the queue was full, the
+    /// runtime is not running, or the call took too long.
+    #[must_use]
+    pub const fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Busy
+                | Self::NotRunning(_)
+                | Self::Timeout(_)
+                | Self::SetupPanicked(_)
+                | Self::StartupTimeout(_)
+                | Self::ShutdownTimeout(_)
+        )
     }
 
     /// The Autumn error with the status of [`RuntimeError::status_code`] and
@@ -75,7 +98,14 @@ impl RuntimeError {
     /// error a 500 with its `Display` text.
     #[must_use]
     pub fn into_autumn_error(self) -> AutumnError {
-        AutumnError::internal_server_error_msg("")
+        let message = self.public_message();
+        if self.is_retryable() {
+            tracing::debug!(error = %self, "bevy call refused");
+            AutumnError::service_unavailable_msg(message)
+        } else {
+            tracing::warn!(error = %self, "bevy call failed");
+            AutumnError::internal_server_error_msg(message)
+        }
     }
 }
 

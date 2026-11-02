@@ -7,8 +7,18 @@ use autumn_web::app::AppBuilder;
 use autumn_web::plugin::Plugin;
 use autumn_web::plugin_contract::PluginContract;
 
+use std::sync::Arc;
+
+use autumn_web::{AutumnError, AutumnResult};
+
 use crate::Setup;
 use crate::config::BevyConfig;
+use crate::error::RuntimeError;
+use crate::handle::BevyHandle;
+use crate::runtime::BevyRuntime;
+
+/// The `autumn-web` versions that this release supports.
+const AUTUMN_WEB_RANGE: &str = "0.9";
 
 /// The Autumn plugin that runs one headless Bevy app.
 ///
@@ -53,35 +63,98 @@ impl BevyPlugin {
 
     /// Adds one more setup step. The steps run in the order you add them.
     #[must_use]
-    pub fn setup<F>(self, setup: F) -> Self
+    pub fn setup<F>(mut self, setup: F) -> Self
     where
         F: FnOnce(&mut bevy_app::App) + Send + 'static,
     {
-        let _ = setup;
+        self.setups.push(Box::new(setup));
         self
     }
 
     /// Sets the configuration.
     #[must_use]
-    pub fn config(self, config: BevyConfig) -> Self {
-        let _ = config;
+    pub fn config(mut self, config: BevyConfig) -> Self {
+        self.config = config;
         self
     }
 }
 
 impl Plugin for BevyPlugin {
     fn name(&self) -> Cow<'static, str> {
-        Cow::Borrowed("")
+        Cow::Borrowed(Self::NAME)
     }
 
+    /// A third-party contract. This crate has its own versions, so it does
+    /// not use `lockstep_range`.
     fn contract(&self) -> Option<PluginContract> {
-        None
+        Some(
+            PluginContract::new(env!("CARGO_PKG_NAME"))
+                .plugin_version(env!("CARGO_PKG_VERSION"))
+                .autumn_web(AUTUMN_WEB_RANGE),
+        )
     }
 
     fn build(self, app: AppBuilder) -> AppBuilder {
-        let _ = (self.config, self.setups);
-        app
+        let setups = self.setups;
+        let runtime = Arc::new(BevyRuntime::new(
+            self.config,
+            move |bevy: &mut bevy_app::App| {
+                for setup in setups {
+                    setup(bevy);
+                }
+            },
+        ));
+        let handle = runtime.handle();
+        let health = Arc::new(runtime.health());
+        let metrics = Arc::new(runtime.metrics());
+        let on_start = Arc::clone(&runtime);
+        let on_stop = runtime;
+        app.config_section("bevy")
+            // Initializers also run in modes that serve no requests (static
+            // builds, replays). So this one only publishes the handle. The
+            // startup hook starts the thread.
+            .state_initializer(move |state| {
+                if state.extension::<BevyHandle>().is_some() {
+                    tracing::error!("a BevyHandle is already in the app state; keeping the first");
+                    return;
+                }
+                state.insert_extension(handle);
+            })
+            .on_startup(move |_state| {
+                let runtime = Arc::clone(&on_start);
+                async move { start(&runtime).await }
+            })
+            .on_shutdown(move || {
+                let runtime = Arc::clone(&on_stop);
+                async move { stop(&runtime).await }
+            })
+            .health_indicator("bevy", health)
+            .metrics_source("bevy", metrics)
     }
+}
+
+/// The startup hook: start the thread and wait for the first update. An
+/// error stops the boot of the server.
+async fn start(runtime: &BevyRuntime) -> AutumnResult<()> {
+    match runtime.start() {
+        Ok(()) | Err(RuntimeError::AlreadyStarted) => {}
+        Err(err) => return Err(boot_error(&err)),
+    }
+    runtime.wait_ready().await.map_err(|err| boot_error(&err))
+}
+
+/// The shutdown hook. A late stop is logged, not returned: the server stops
+/// anyway.
+async fn stop(runtime: &BevyRuntime) {
+    if let Err(err) = runtime.shutdown().await {
+        tracing::warn!(error = %err, "bevy runtime did not stop in time");
+    }
+}
+
+/// A boot error carries the full text. It goes to the boot log, not to an
+/// HTTP client.
+fn boot_error(err: &RuntimeError) -> AutumnError {
+    AutumnError::internal_server_error_msg(format!("bevy runtime did not start: {err}"))
 }
 
 impl fmt::Debug for BevyPlugin {

@@ -37,14 +37,27 @@ impl Event {
 /// The status after `event`, or `None` when the event is not allowed. On
 /// `None` the runtime changes nothing.
 pub(crate) const fn next(status: RuntimeStatus, event: Event) -> Option<RuntimeStatus> {
-    let _ = (status, event);
-    None
+    use RuntimeStatus::{Failed, NotStarted, Running, Starting, Stopped, Stopping};
+    match (status, event) {
+        (NotStarted, Event::Start) => Some(Starting),
+        (NotStarted, Event::Stop) => Some(Stopped),
+        (Starting, Event::Ready) => Some(Running),
+        (Starting | Running, Event::Stop | Event::Fail) => Some(Stopping),
+        (Stopping, Event::Drained { failed: false }) => Some(Stopped),
+        (Stopping, Event::Drained { failed: true }) => Some(Failed),
+        _ => None,
+    }
 }
 
 /// The rank of a status. Each allowed step makes it go up.
 pub(crate) const fn rank(status: RuntimeStatus) -> u8 {
-    let _ = status;
-    0
+    match status {
+        RuntimeStatus::NotStarted => 0,
+        RuntimeStatus::Starting => 1,
+        RuntimeStatus::Running => 2,
+        RuntimeStatus::Stopping => 3,
+        RuntimeStatus::Stopped | RuntimeStatus::Failed => 4,
+    }
 }
 
 #[cfg(test)]

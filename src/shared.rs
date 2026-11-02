@@ -116,6 +116,7 @@ impl Shared {
         let next = lifecycle::next(*status, event);
         match next {
             Some(to) => {
+                debug_assert!(lifecycle::rank(to) > lifecycle::rank(*status));
                 *status = to;
                 self.mirror.store(to.to_u8(), Ordering::Release);
                 drop(status);

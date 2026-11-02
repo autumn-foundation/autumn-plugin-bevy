@@ -7,9 +7,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use autumn_web::actuator::{HealthCheckOutput, HealthIndicator};
+use std::sync::atomic::Ordering;
 
-use crate::shared::Shared;
+use autumn_web::actuator::{HealthCheckOutput, HealthIndicator};
+use serde_json::Value;
+
+use crate::shared::{Shared, Stats};
 use crate::status::RuntimeStatus;
 
 /// The health indicator of a [`BevyRuntime`](crate::BevyRuntime).
@@ -36,10 +39,21 @@ pub(crate) const fn evaluate(
     busy_for: Duration,
     threshold: Duration,
 ) -> Verdict {
-    let _ = (status, busy_for, threshold);
+    let reason = match status {
+        RuntimeStatus::Running => {
+            if busy_for.as_nanos() < threshold.as_nanos() {
+                return Verdict {
+                    up: true,
+                    reason: None,
+                };
+            }
+            "stalled"
+        }
+        other => other.as_str(),
+    };
     Verdict {
-        up: true,
-        reason: None,
+        up: false,
+        reason: Some(reason),
     }
 }
 
@@ -51,8 +65,34 @@ impl BevyHealth {
     /// Runs the check now.
     #[must_use]
     pub fn snapshot(&self) -> HealthCheckOutput {
-        let _ = &self.shared;
-        HealthCheckOutput::up().with_details(HashMap::new())
+        let shared = &self.shared;
+        let status = shared.status();
+        let busy_for = shared.busy_for();
+        let verdict = evaluate(status, busy_for, shared.config.stall_threshold);
+        let mut details = HashMap::from([
+            ("status".to_owned(), Value::from(status.as_str())),
+            (
+                "ticks".to_owned(),
+                Value::from(Stats::get(&shared.stats.ticks)),
+            ),
+            (
+                "queue_depth".to_owned(),
+                Value::from(shared.stats.queue_depth.load(Ordering::Relaxed)),
+            ),
+            (
+                "busy_ms".to_owned(),
+                Value::from(u64::try_from(busy_for.as_millis()).unwrap_or(u64::MAX)),
+            ),
+        ]);
+        let output = if verdict.up {
+            HealthCheckOutput::up()
+        } else {
+            if let Some(reason) = verdict.reason {
+                details.insert("reason".to_owned(), Value::from(reason));
+            }
+            HealthCheckOutput::down()
+        };
+        output.with_details(details)
     }
 }
 

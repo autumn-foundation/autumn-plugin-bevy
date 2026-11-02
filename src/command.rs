@@ -7,6 +7,7 @@ use bevy_ecs::world::World;
 use tokio::sync::oneshot;
 
 use crate::error::RuntimeError;
+use crate::shared::Stats;
 
 /// One message in the command queue.
 pub(crate) enum Msg {
@@ -21,18 +22,11 @@ pub(crate) enum Msg {
     Wake,
 }
 
-/// The result of one command, for the metrics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Outcome {
-    Ok,
-    Panicked,
-    Cancelled,
-}
-
 /// A queued closure and its reply channel.
 pub(crate) trait Command: Send {
-    /// Runs the closure, or skips it when the caller has gone.
-    fn run(self: Box<Self>, world: &mut World) -> Outcome;
+    /// Runs the closure, or skips it when the caller has gone. It counts the
+    /// outcome before the reply, so a caller never sees an old count.
+    fn run(self: Box<Self>, world: &mut World, stats: &Stats);
     /// Sends `err` and does not run the closure.
     fn reject(self: Box<Self>, err: RuntimeError);
 }
@@ -48,23 +42,24 @@ where
     F: FnOnce(&mut World) -> R + Send + 'static,
     R: Send + 'static,
 {
-    fn run(self: Box<Self>, world: &mut World) -> Outcome {
+    fn run(self: Box<Self>, world: &mut World, stats: &Stats) {
         let Self { f, reply } = *self;
         // A caller that timed out or went away gets no result. Do not change
         // the world for it.
         if reply.is_closed() {
-            return Outcome::Cancelled;
+            Stats::add(&stats.commands_cancelled);
+            return;
         }
         match catch_unwind(AssertUnwindSafe(|| f(world))) {
             Ok(value) => {
+                Stats::add(&stats.commands_ok);
                 // The caller can go away while the closure runs.
                 let _ = reply.send(Ok(value));
-                Outcome::Ok
             }
             Err(payload) => {
                 tracing::error!(panic = %panic_message(payload.as_ref()), "bevy command panicked");
+                Stats::add(&stats.commands_panicked);
                 let _ = reply.send(Err(RuntimeError::CommandPanicked));
-                Outcome::Panicked
             }
         }
     }

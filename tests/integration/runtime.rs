@@ -13,7 +13,8 @@ use bevy_app::{App, AppExit, Last, Plugin, Startup, Update};
 use bevy_ecs::prelude::*;
 
 use crate::support::{
-    Gate, Log, Updates, Value, counting, current_thread, entered, eventually, manual, ready,
+    Gate, Log, Updates, Value, count_updates, counting, current_thread, entered, eventually,
+    manual, ready,
 };
 
 fn thread_name() -> String {
@@ -290,9 +291,13 @@ async fn command_panic_is_contained() {
 async fn update_panic_fails_runtime() {
     let runtime = ready(BevyRuntime::new(manual(), |app: &mut App| {
         counting(app);
-        app.add_systems(Update, |updates: Res<Updates>| {
-            assert!(updates.0 < 3, "update boom on tick 3");
-        });
+        app.add_systems(
+            Update,
+            (|updates: Res<Updates>| {
+                assert!(updates.0 < 3, "update boom on tick 3");
+            })
+            .after(count_updates),
+        );
     }))
     .await;
     let handle = runtime.handle();
@@ -374,11 +379,12 @@ fn exit_on_tick(exit: AppExit) -> impl FnOnce(&mut App) + Send + 'static {
         counting(app);
         app.add_systems(
             Update,
-            move |updates: Res<Updates>, mut out: MessageWriter<AppExit>| {
+            (move |updates: Res<Updates>, mut out: MessageWriter<AppExit>| {
                 if updates.0 == 2 {
                     out.write(exit.clone());
                 }
-            },
+            })
+            .after(count_updates),
         );
     }
 }
@@ -670,7 +676,15 @@ fn concurrent_calls_do_not_block_reactor() {
         let mut set = tokio::task::JoinSet::new();
         for i in 0..1000_u64 {
             let h = handle.clone();
-            set.spawn(async move { h.with_world(move |_w| i).await });
+            set.spawn(async move {
+                h.with_world(move |_w| {
+                    // Hold the Bevy thread, so the calls are in flight for
+                    // seconds.
+                    std::thread::sleep(Duration::from_millis(1));
+                    i
+                })
+                .await
+            });
         }
         let mut done = 0;
         while let Some(result) = set.join_next().await {

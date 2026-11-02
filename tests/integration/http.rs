@@ -107,7 +107,8 @@ async fn extractor_without_plugin_returns_500() {
     let client = TestApp::new().routes(routes![count, ping]).build();
     let response = client.get("/count").send().await;
     response.assert_status(500);
-    response.assert_body_contains("internal error");
+    // Autumn redacts the detail of a 5xx. Our text is fixed too.
+    response.assert_body_contains("Internal server error");
     assert!(
         !response.text().contains("BevyPlugin"),
         "{}",
@@ -165,7 +166,7 @@ async fn app_exit_keeps_server_serving() {
     );
     let after = client.get("/count").send().await;
     after.assert_status(503);
-    after.assert_body_contains("bevy runtime is unavailable");
+    after.assert_body_contains("Service unavailable");
     client
         .get("/ping")
         .send()

@@ -10,8 +10,13 @@ use std::time::{Duration, Instant};
 /// drift. When late, the schedule skips the missed ticks and the next
 /// deadline is `now + period`, so there is no burst.
 pub(crate) fn next_deadline(prev: Instant, period: Duration, now: Instant) -> (Instant, u64) {
-    let _ = (period, now);
-    (prev, 0)
+    let on_time = prev + period;
+    if now < on_time {
+        return (on_time, 0);
+    }
+    let late = now.saturating_duration_since(prev).as_nanos();
+    let skipped = late / period.as_nanos().max(1);
+    (now + period, u64::try_from(skipped).unwrap_or(u64::MAX))
 }
 
 #[cfg(test)]
