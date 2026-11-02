@@ -1,0 +1,59 @@
+[package]
+name = "autumn-plugin-bevy"
+version = "0.1.0"
+edition = "2024"
+# bevy_ecs 0.20 needs Rust 1.95. autumn-web 0.9 needs 1.88.
+rust-version = "1.95"
+license = "Apache-2.0"
+description = "Run a headless Bevy ECS app inside an Autumn web server"
+repository = "https://github.com/autumn-foundation/autumn-plugin-bevy"
+readme = "README.md"
+keywords = ["autumn", "bevy", "ecs", "plugin", "simulation"]
+categories = ["web-programming::http-server", "game-development", "simulation"]
+exclude = ["/.github", "/verification", "/scripts"]
+
+[dependencies]
+# No default features: the plugin needs only the core plugin API. The app
+# turns on the autumn-web features that it uses.
+autumn-web = { version = "0.9", default-features = false }
+# `bevy_app` and `bevy_ecs` only. The `bevy` crate adds rendering and needs
+# Rust 1.97.1.
+bevy_app = { version = "0.20.1", default-features = false, features = ["std"] }
+bevy_ecs = { version = "0.20.1", default-features = false, features = ["std"] }
+bevy_tasks = { version = "0.20.1", default-features = false, features = ["async_executor"] }
+bevy_time = { version = "0.20.1", default-features = false, features = ["std"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+toml = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+proptest = "1"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
+
+[features]
+default = ["time"]
+# Adds `bevy_time::TimePlugin` when setup did not add it. In
+# `TickMode::Manual` time then goes forward by a fixed step on each update.
+time = ["dep:bevy_time"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[[example]]
+name = "counter"
