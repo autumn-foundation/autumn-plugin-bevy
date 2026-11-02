@@ -68,8 +68,9 @@ impl BevyHandle {
     }
 
     /// The same as [`BevyHandle::with_world`], with its own wait limit.
-    /// `None` waits with no limit. A `Some` limit needs a tokio runtime with
-    /// the time driver.
+    /// `None` waits with no limit. A `Some` limit uses the tokio timer. With
+    /// no tokio runtime, the call waits with no limit. A tokio runtime with no
+    /// time driver makes tokio panic, so turn on its time driver.
     ///
     /// # Errors
     ///
@@ -161,8 +162,17 @@ impl BevyHandle {
         }
     }
 
-    /// Waits for a reply. A closed reply means that the thread has gone.
+    /// Waits for a reply. A closed reply means that the thread stopped.
     async fn wait<T>(&self, reply: Reply<T>, timeout: Option<Duration>) -> Result<T, RuntimeError> {
+        // With no tokio runtime there is no timer. Then wait with no limit, so
+        // that the call does not panic.
+        let timeout = timeout.filter(|_| {
+            let in_tokio = tokio::runtime::Handle::try_current().is_ok();
+            if !in_tokio {
+                tracing::debug!("no tokio runtime: the bevy call waits with no limit");
+            }
+            in_tokio
+        });
         let received = match timeout {
             Some(limit) => {
                 if let Ok(received) = tokio::time::timeout(limit, reply).await {
@@ -200,7 +210,8 @@ impl fmt::Debug for BevyHandle {
 /// ```
 ///
 /// Its methods return [`AutumnResult`] with a safe HTTP error: 503 when a
-/// retry can help, 500 else, and a fixed body. Use [`Bevy::handle`] to get
+/// retry can help, 500 for the other errors, and a fixed body. Outside a
+/// dev profile, Autumn replaces the body detail of a 5xx with its own text. Use [`Bevy::handle`] to get
 /// the typed [`RuntimeError`].
 ///
 /// When the app has no [`BevyPlugin`](crate::BevyPlugin), the extractor

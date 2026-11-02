@@ -13,7 +13,7 @@ use autumn_web::{AutumnError, AutumnResult};
 
 use crate::Setup;
 use crate::config::BevyConfig;
-use crate::error::RuntimeError;
+use crate::error::{ConfigError, RuntimeError};
 use crate::handle::BevyHandle;
 use crate::runtime::BevyRuntime;
 
@@ -40,7 +40,7 @@ const AUTUMN_WEB_RANGE: &str = "0.9";
 /// shutdown hook. It registers the `bevy` health indicator and the `bevy`
 /// metrics source. It mounts no routes.
 pub struct BevyPlugin {
-    config: BevyConfig,
+    config: Option<BevyConfig>,
     setups: Vec<Setup>,
 }
 
@@ -56,7 +56,7 @@ impl BevyPlugin {
         F: FnOnce(&mut bevy_app::App) + Send + 'static,
     {
         Self {
-            config: BevyConfig::default(),
+            config: None,
             setups: vec![Box::new(setup)],
         }
     }
@@ -71,10 +71,11 @@ impl BevyPlugin {
         self
     }
 
-    /// Sets the configuration.
+    /// Sets the configuration in code. Then the plugin does not read the
+    /// `[bevy]` table of `autumn.toml`.
     #[must_use]
     pub const fn config(mut self, config: BevyConfig) -> Self {
-        self.config = config;
+        self.config = Some(config);
         self
     }
 }
@@ -96,14 +97,12 @@ impl Plugin for BevyPlugin {
 
     fn build(self, app: AppBuilder) -> AppBuilder {
         let setups = self.setups;
-        let runtime = Arc::new(BevyRuntime::new(
-            self.config,
-            move |bevy: &mut bevy_app::App| {
-                for setup in setups {
-                    setup(bevy);
-                }
-            },
-        ));
+        let (config, config_error) = resolve_config(self.config, BevyConfig::load_default);
+        let runtime = Arc::new(BevyRuntime::new(config, move |bevy: &mut bevy_app::App| {
+            for setup in setups {
+                setup(bevy);
+            }
+        }));
         let handle = runtime.handle();
         let health = Arc::new(runtime.health());
         let metrics = Arc::new(runtime.metrics());
@@ -122,7 +121,15 @@ impl Plugin for BevyPlugin {
             })
             .on_startup(move |_state| {
                 let runtime = Arc::clone(&on_start);
-                async move { start(&runtime).await }
+                let config_error = config_error.clone();
+                async move {
+                    if let Some(err) = config_error {
+                        return Err(AutumnError::internal_server_error_msg(format!(
+                            "bevy runtime did not start: {err}"
+                        )));
+                    }
+                    start(&runtime).await
+                }
             })
             .on_shutdown(move || {
                 let runtime = Arc::clone(&on_stop);
@@ -131,6 +138,21 @@ impl Plugin for BevyPlugin {
             .health_indicator("bevy", health)
             .metrics_source("bevy", metrics)
     }
+}
+
+/// The configuration: the one from code, else the `[bevy]` table. A bad table
+/// gives the defaults and an error, and the startup hook then stops the boot.
+fn resolve_config(
+    explicit: Option<BevyConfig>,
+    load: impl FnOnce() -> Result<BevyConfig, ConfigError>,
+) -> (BevyConfig, Option<ConfigError>) {
+    explicit.map_or_else(
+        || match load() {
+            Ok(config) => (config, None),
+            Err(err) => (BevyConfig::default(), Some(err)),
+        },
+        |config| (config, None),
+    )
 }
 
 /// The startup hook: start the thread and wait for the first update. An
@@ -143,8 +165,8 @@ async fn start(runtime: &BevyRuntime) -> AutumnResult<()> {
     runtime.wait_ready().await.map_err(|err| boot_error(&err))
 }
 
-/// The shutdown hook. A late stop is logged, not returned: the server stops
-/// anyway.
+/// The shutdown hook. It logs a late stop and does not return it, because
+/// the server stops anyway.
 async fn stop(runtime: &BevyRuntime) {
     if let Err(err) = runtime.shutdown().await {
         tracing::warn!(error = %err, "bevy runtime did not stop in time");
@@ -177,6 +199,22 @@ mod tests {
         BevyConfig::manual().with_shutdown_timeout(Duration::from_secs(5))
     }
 
+    #[test]
+    fn config_from_code_wins_and_a_bad_table_is_an_error() {
+        let code = BevyConfig::manual();
+        let (config, err) = resolve_config(Some(code.clone()), || panic!("must not read the file"));
+        assert_eq!(config, code);
+        assert!(err.is_none());
+
+        let (config, err) = resolve_config(None, || Ok(BevyConfig::manual()));
+        assert_eq!(config, BevyConfig::manual());
+        assert!(err.is_none());
+
+        let (config, err) = resolve_config(None, || Err(ConfigError::TickRate(0)));
+        assert_eq!(config, BevyConfig::default());
+        assert_eq!(err, Some(ConfigError::TickRate(0)));
+    }
+
     #[tokio::test]
     async fn startup_hook_starts_and_is_idempotent() {
         let runtime = BevyRuntime::new(manual(), |_app| {});
@@ -202,12 +240,19 @@ mod tests {
         let runtime = BevyRuntime::new(config, |_app| {});
         start(&runtime).await.expect("start");
         let handle = runtime.handle();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let stuck = tokio::spawn(async move {
             handle
-                .with_world_timeout(None, |_w| std::thread::sleep(Duration::from_millis(400)))
+                .with_world_timeout(None, move |_w| {
+                    let _ = entered_tx.send(());
+                    std::thread::sleep(Duration::from_millis(400));
+                })
                 .await
         });
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(10)))
+            .await
+            .unwrap()
+            .expect("the command started");
         stop(&runtime).await;
         assert!(
             !runtime.status().is_terminal(),

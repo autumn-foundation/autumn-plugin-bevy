@@ -15,13 +15,15 @@ All notable changes to this crate are in this file. The format follows
   bounded command queue. A full queue fails at once with `Busy`.
 - The `Bevy` handler extractor. Its methods return `AutumnResult` with a
   503 or 500 error and a fixed body.
-- `TickMode::Fixed` (default 60 Hz, late ticks are skipped) and
+- `TickMode::Fixed` (default 60 Hz; the schedule skips late ticks) and
   `TickMode::Manual` with `step(n)` for tests.
 - Panic isolation: a panic in a command fails that call only. A panic in an
   update stops the world, and the server continues.
 - The `bevy` health indicator (`Readiness` group) and the `bevy_*` metrics.
-- `BevyConfig` with the `[bevy]` table of `autumn.toml`. An unknown key is an
-  error.
+- Calls work with no tokio runtime. Then they wait with no limit.
+- `BevyConfig` with the `[bevy]` table of `autumn.toml`. The plugin reads the
+  table when the app gives no configuration in code. An unknown key or a
+  value out of range is an error.
 - The `time` feature (on by default): adds `TimePlugin` when setup did not
   add it, with a fixed time step in manual mode.
 - A Verus model of the lifecycle, the queue and the tick schedule in

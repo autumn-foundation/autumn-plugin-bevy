@@ -6,7 +6,7 @@ use crate::status::RuntimeStatus;
 /// An event that can change the status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
-    /// `BevyRuntime::start` spawned the thread.
+    /// `BevyRuntime::start` is about to spawn the thread.
     Start,
     /// Setup and the first update are done.
     Ready,
@@ -66,7 +66,7 @@ mod tests {
     use proptest::prelude::*;
 
     /// The `next` function of `verification/bevy_runtime.rs`, row by row.
-    /// Pairs that are not in this table are refused.
+    /// `next` refuses a pair that is not in this table.
     const SPEC_TABLE: [(RuntimeStatus, Event, RuntimeStatus); 9] = [
         (NotStarted, Event::Start, Starting),
         (NotStarted, Event::Stop, Stopped),
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn lifecycle_matches_spec_table() {
-        for status in RuntimeStatus::ALL {
+        for &status in RuntimeStatus::ALL {
             for event in Event::ALL {
                 assert_eq!(
                     next(status, event),
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn rank_never_decreases() {
-        for status in RuntimeStatus::ALL {
+        for &status in RuntimeStatus::ALL {
             for event in Event::ALL {
                 if let Some(to) = next(status, event) {
                     assert!(rank(to) > rank(status), "{status:?} -> {to:?}");
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn rank_order_matches_spec() {
-        let ranks: Vec<u8> = RuntimeStatus::ALL.into_iter().map(rank).collect();
+        let ranks: Vec<u8> = RuntimeStatus::ALL.iter().copied().map(rank).collect();
         assert_eq!(ranks, [0, 1, 2, 3, 4, 4]);
     }
 
@@ -130,9 +130,11 @@ mod tests {
     }
 
     proptest! {
-        /// Random event sequences keep the spec invariants: the rank goes
-        /// up, a terminal status stays, Running comes only after Starting,
-        /// and Failed comes only after a failed drain.
+        /// Random event sequences keep these spec rules:
+        /// - The rank goes up.
+        /// - A terminal status stays.
+        /// - Running comes only after Starting.
+        /// - Failed comes only after a failed drain.
         #[test]
         fn lifecycle_proptest(events in prop::collection::vec(any_event(), 0..40)) {
             let mut status = NotStarted;

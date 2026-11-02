@@ -9,9 +9,13 @@ verus! {
 //
 // One step here is one critical section in the runtime. The status changes
 // under one mutex. The queue is a bounded channel: a count is enough here,
-// because the proofs are about counts, not about order. The tests
-// `lifecycle_matches_spec_table` and `lifecycle_proptest` check the same rules
-// on the Rust code.
+// because the proofs are about counts, not about order.
+//
+// The Rust tests check two parts against this model. `lifecycle_matches_spec_table`
+// compares `lifecycle::next` with a copy of `next` below, made by hand: keep
+// the two the same. `f19_every_accepted_call_gets_one_answer` checks the
+// accounting (I5, I6) on the real runtime. The other steps are a model of
+// `src/driver.rs`, checked by review.
 
 // ── Status ─────────────────────────────────────────────────────────────────
 
@@ -111,37 +115,58 @@ pub proof fn terminal_only_after_drain(s: int, e: int)
 
 pub struct Rt {
     pub status: int,
-    /// Commands in the channel.
+    /// Messages in the channel: commands, steps and wakes.
     pub queued: nat,
-    /// Commands that the channel took.
+    /// Messages that the channel took.
     pub accepted: nat,
-    /// Commands that got a reply (a result, an error, or a dropped reply).
+    /// Messages that got a reply (a result, an error, a dropped reply, or a
+    /// wake that the loop read).
     pub replied: nat,
     pub cap: nat,
     pub ticks: nat,
     pub failed: bool,
-    /// The tick deadline has passed.
+    /// Another thread recorded a failure (a startup timeout in `wait_ready`).
+    /// The Bevy thread then fails at its next check.
+    pub doomed: bool,
+    /// The last graceful update in Stopping ran.
+    pub flushed: bool,
+    /// The tick deadline has passed (fixed mode).
     pub due: bool,
 }
 
-/// The channel is open from the start until the drain closes it.
+/// The status gate in `BevyHandle::submit` (`accepts_commands`).
+pub open spec fn accepts(s: int) -> bool {
+    s == starting() || s == running()
+}
+
+/// The channel is open from the start until the drain closes it. It is
+/// wider than `accepts`: a caller can read Running, then the status goes to
+/// Stopping, and then its send still goes into the channel.
 pub open spec fn channel_open(s: int) -> bool {
     s == starting() || s == running() || s == stopping()
 }
+
+pub proof fn the_gate_is_inside_the_open_channel(s: int)
+    ensures
+        accepts(s) ==> channel_open(s),
+{}
 
 pub open spec fn inv(r: Rt) -> bool {
     &&& valid(r.status)
     &&& r.cap > 0
     // I3: the queue is bounded.
     &&& r.queued <= r.cap
-    // I5: each accepted command is queued or has its reply.
+    // I5: each accepted message is queued or has its reply.
     &&& r.accepted == r.replied + r.queued
-    // I6: when the channel is closed, no command waits.
+    // I6: when the channel is closed, no message waits.
     &&& (!channel_open(r.status) ==> r.queued == 0)
     // The failed flag is set only on the way down, and it decides the end.
     &&& (r.failed ==> r.status >= stopping())
     &&& (r.status == failed() ==> r.failed)
     &&& (r.status == stopped() ==> !r.failed)
+    // A recorded failure keeps the runtime out of Running.
+    &&& (r.doomed ==> r.status != running())
+    &&& (r.flushed ==> r.status >= stopping())
     &&& (r.due ==> r.status == running())
 }
 
@@ -154,6 +179,8 @@ pub open spec fn init(cap: nat) -> Rt {
         cap,
         ticks: 0,
         failed: false,
+        doomed: false,
+        flushed: false,
         due: false,
     }
 }
@@ -165,22 +192,33 @@ pub proof fn init_holds(cap: nat)
         inv(init(cap)),
 {}
 
-// Each step is `(enabled, after)`. When a step is not enabled, the runtime
-// refuses it and changes nothing.
+// Each step has an enabling condition (the `requires` side in the lemma
+// below). When a step is not enabled, the runtime refuses it and changes
+// nothing.
 
 /// `BevyRuntime::start`.
 pub open spec fn start(r: Rt) -> Rt {
     Rt { status: starting(), ..r }
 }
 
-/// The boot update is done: tick 1, then Running.
+/// `wait_ready` timed out: it records the failure. The status stays.
+pub open spec fn record_failure(r: Rt) -> Rt {
+    Rt { doomed: true, ..r }
+}
+
+/// The boot update is done: tick 1, then Running. `Driver::run` checks the
+/// stop flag and the recorded failure first, so a doomed boot never runs.
+pub open spec fn ready_enabled(r: Rt) -> bool {
+    r.status == starting() && !r.doomed
+}
+
 pub open spec fn ready(r: Rt) -> Rt {
     Rt { status: running(), ticks: r.ticks + 1, ..r }
 }
 
-/// `BevyHandle::with_world`: the result, and whether the channel took the
-/// command. I4: it takes a command only while the channel is open and has
-/// room.
+/// The channel takes a message: the result, and whether it took it. I4: it
+/// takes one only while the channel is open and has room. The code's status
+/// gate (`accepts`) refuses more, never less.
 pub open spec fn submit(r: Rt) -> (Rt, bool) {
     if channel_open(r.status) && r.queued < r.cap {
         (Rt { queued: r.queued + 1, accepted: r.accepted + 1, ..r }, true)
@@ -189,7 +227,7 @@ pub open spec fn submit(r: Rt) -> (Rt, bool) {
     }
 }
 
-/// The loop runs one command, or skips one whose caller has gone. I7 and I9:
+/// The loop runs one message, or skips one whose caller is gone. I7 and I9:
 /// only in Running, and only when no tick is due.
 pub open spec fn exec_enabled(r: Rt) -> bool {
     r.status == running() && r.queued > 0 && !r.due
@@ -197,6 +235,13 @@ pub open spec fn exec_enabled(r: Rt) -> bool {
 
 pub open spec fn exec_one(r: Rt) -> Rt {
     Rt { queued: (r.queued - 1) as nat, replied: r.replied + 1, ..r }
+}
+
+/// A `step(n)` message: it runs `k` updates (`k <= n`; it ends early on a
+/// stop, a failure or a closed reply). Manual mode only, where no tick is
+/// due.
+pub open spec fn exec_step(r: Rt, k: nat) -> Rt {
+    Rt { queued: (r.queued - 1) as nat, replied: r.replied + 1, ticks: r.ticks + k, ..r }
 }
 
 /// The deadline passes.
@@ -213,7 +258,7 @@ pub open spec fn tick(r: Rt) -> Rt {
     Rt { ticks: r.ticks + 1, due: false, ..r }
 }
 
-/// A panic or `AppExit::Error`.
+/// A panic, `AppExit::Error`, or a recorded failure.
 pub open spec fn fail(r: Rt) -> Rt {
     Rt { status: stopping(), failed: true, due: false, ..r }
 }
@@ -227,7 +272,17 @@ pub open spec fn stop(r: Rt) -> Rt {
     }
 }
 
-/// The drain rejects one queued command.
+/// The last graceful update in Stopping, once, and only with no failure. It
+/// can panic: then `failed` becomes true.
+pub open spec fn final_update_enabled(r: Rt) -> bool {
+    r.status == stopping() && !r.failed && !r.flushed
+}
+
+pub open spec fn final_update(r: Rt, panics: bool) -> Rt {
+    Rt { ticks: r.ticks + 1, flushed: true, failed: panics, ..r }
+}
+
+/// The drain rejects one queued message.
 pub open spec fn drain_one(r: Rt) -> Rt {
     Rt { queued: (r.queued - 1) as nat, replied: r.replied + 1, ..r }
 }
@@ -238,26 +293,29 @@ pub open spec fn finish(r: Rt) -> Rt {
 }
 
 /// Every step keeps the invariant, when it is enabled.
-pub proof fn steps_keep_the_invariant(r: Rt)
+pub proof fn steps_keep_the_invariant(r: Rt, k: nat, panics: bool)
     requires
         inv(r),
     ensures
         r.status == not_started() ==> inv(start(r)),
-        r.status == starting() ==> inv(ready(r)),
+        r.status == starting() ==> inv(record_failure(r)),
+        ready_enabled(r) ==> inv(ready(r)),
         inv(submit(r).0),
         exec_enabled(r) ==> inv(exec_one(r)),
+        exec_enabled(r) ==> inv(exec_step(r, k)),
         r.status == running() ==> inv(become_due(r)),
         tick_enabled(r) ==> inv(tick(r)),
         (r.status == starting() || r.status == running()) ==> inv(fail(r)),
         (r.status == not_started() || r.status == starting() || r.status == running()) ==> inv(
             stop(r),
         ),
+        final_update_enabled(r) ==> inv(final_update(r, panics)),
         (r.status == stopping() && r.queued > 0) ==> inv(drain_one(r)),
         (r.status == stopping() && r.queued == 0) ==> inv(finish(r)),
 {}
 
-/// I4: a refused submit changes nothing, and it is refused only when the
-/// channel is closed or full.
+/// I4: a refused submit changes nothing, and the channel refuses only when
+/// it is closed or full.
 pub proof fn refused_submit_changes_nothing(r: Rt)
     requires
         inv(r),
@@ -265,7 +323,7 @@ pub proof fn refused_submit_changes_nothing(r: Rt)
         !submit(r).1 ==> submit(r).0 == r && (!channel_open(r.status) || r.queued == r.cap),
 {}
 
-/// I6: at the end, every accepted command has its reply.
+/// I6: at the end, every accepted message has its reply.
 pub proof fn no_command_is_lost(r: Rt)
     requires
         inv(r),
@@ -274,21 +332,26 @@ pub proof fn no_command_is_lost(r: Rt)
         r.accepted == r.replied,
 {}
 
-/// I8: a tick adds one to the count, and nothing makes the count go down.
-pub proof fn ticks_never_go_down(r: Rt)
+/// I8: no step makes the count go down. A tick and the boot update add one,
+/// a step adds its updates, and the last graceful update adds one.
+pub proof fn ticks_never_go_down(r: Rt, k: nat, panics: bool)
     requires
         inv(r),
     ensures
         tick(r).ticks == r.ticks + 1,
         ready(r).ticks == r.ticks + 1,
+        exec_step(r, k).ticks == r.ticks + k,
+        final_update(r, panics).ticks == r.ticks + 1,
         exec_one(r).ticks == r.ticks,
+        record_failure(r).ticks == r.ticks,
         fail(r).ticks == r.ticks,
         stop(r).ticks == r.ticks,
         drain_one(r).ticks == r.ticks,
         finish(r).ticks == r.ticks,
 {}
 
-/// I10: after a failure, no update and no command runs.
+/// I10: after a failure, no update and no command runs, and the end is
+/// Failed. A recorded failure blocks Running.
 pub proof fn no_work_after_failure(r: Rt)
     requires
         inv(r),
@@ -296,17 +359,27 @@ pub proof fn no_work_after_failure(r: Rt)
     ensures
         !tick_enabled(r),
         !exec_enabled(r),
+        !final_update_enabled(r),
         r.status == stopping() ==> finish(r).status == failed(),
 {}
 
+pub proof fn a_recorded_failure_blocks_running(r: Rt)
+    requires
+        inv(r),
+        r.doomed,
+    ensures
+        !ready_enabled(r),
+        r.status != running(),
+{}
+
 /// I11: the health check is up only in Running.
-pub open spec fn health_up(r: Rt, busy_ms: nat, threshold_ms: nat) -> bool {
-    r.status == running() && busy_ms < threshold_ms
+pub open spec fn health_up(r: Rt, working_ms: nat, threshold_ms: nat) -> bool {
+    r.status == running() && working_ms < threshold_ms
 }
 
-pub proof fn health_up_means_running(r: Rt, busy_ms: nat, threshold_ms: nat)
+pub proof fn health_up_means_running(r: Rt, working_ms: nat, threshold_ms: nat)
     ensures
-        health_up(r, busy_ms, threshold_ms) ==> r.status == running(),
+        health_up(r, working_ms, threshold_ms) ==> r.status == running(),
 {}
 
 // ── Tick scheduler (`schedule::next_deadline`), in nanoseconds ─────────────
@@ -356,8 +429,9 @@ pub proof fn late_ticks_are_skipped(prev: int, period: int, now: int)
     }
 }
 
-/// S4: one wake runs at most one update. The loop runs an update only when
-/// `due`, and the update clears `due`.
+/// S4 (fixed mode): one due deadline runs at most one update. The loop runs
+/// an update only when `due`, and the update clears `due`. A `step(n)`
+/// message (manual mode) is `exec_step` instead.
 pub proof fn one_update_per_due_deadline(r: Rt)
     requires
         inv(r),

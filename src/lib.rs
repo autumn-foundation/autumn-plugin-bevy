@@ -19,7 +19,7 @@ mod schedule;
 mod shared;
 mod status;
 
-pub use config::{BevyConfig, QueueCapacity, TickMode, TickRate};
+pub use config::{BevyConfig, MAX_DURATION, QueueCapacity, TickMode, TickRate};
 pub use error::{ConfigError, RuntimeError};
 pub use handle::{Bevy, BevyHandle};
 pub use health::BevyHealth;

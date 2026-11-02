@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// The lifecycle status of a [`BevyRuntime`](crate::BevyRuntime).
 ///
 /// The status goes in one direction only. `Stopped` and `Failed` are the
-/// end. See `docs/adr/0001-dedicated-thread-and-command-queue.md`.
+/// end. See the "Lifecycle" section of the README and `src/lifecycle.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum RuntimeStatus {
@@ -16,17 +16,19 @@ pub enum RuntimeStatus {
     Starting,
     /// The thread runs updates and commands.
     Running,
-    /// The thread rejects the queued commands and drops the world.
+    /// The thread runs the last update, rejects the queued commands and drops
+    /// the world.
     Stopping,
     /// The runtime stopped with no failure.
     Stopped,
-    /// The runtime stopped after a panic or `AppExit::Error`.
+    /// The runtime stopped after a failure: a panic, `AppExit::Error`, a
+    /// startup timeout or a spawn error.
     Failed,
 }
 
 impl RuntimeStatus {
-    /// All statuses, in lifecycle order.
-    pub const ALL: [Self; 6] = [
+    /// All statuses, in lifecycle order. A later release can add a status.
+    pub const ALL: &'static [Self] = &[
         Self::NotStarted,
         Self::Starting,
         Self::Running,
@@ -126,12 +128,14 @@ mod tests {
     #[test]
     fn terminal_and_accepting_sets_are_exact() {
         let terminal: Vec<_> = RuntimeStatus::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|s| s.is_terminal())
             .collect();
         assert_eq!(terminal, [RuntimeStatus::Stopped, RuntimeStatus::Failed]);
         let accepting: Vec<_> = RuntimeStatus::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|s| s.accepts_commands())
             .collect();
         assert_eq!(accepting, [RuntimeStatus::Starting, RuntimeStatus::Running]);
@@ -140,7 +144,8 @@ mod tests {
     #[test]
     fn names_are_snake_case_and_unique() {
         let names: Vec<_> = RuntimeStatus::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .map(RuntimeStatus::as_str)
             .collect();
         assert_eq!(
@@ -159,7 +164,7 @@ mod tests {
 
     #[test]
     fn mirror_code_round_trips() {
-        for status in RuntimeStatus::ALL {
+        for &status in RuntimeStatus::ALL {
             assert_eq!(RuntimeStatus::from_u8(status.to_u8()), status);
         }
         assert_eq!(RuntimeStatus::from_u8(200), RuntimeStatus::Failed);

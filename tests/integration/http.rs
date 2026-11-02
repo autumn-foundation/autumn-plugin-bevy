@@ -256,3 +256,40 @@ async fn extractor_methods_map_results_and_errors() {
         .await
         .assert_status(500);
 }
+
+// ── The plugin's own body text, with a dev profile ──────────────────────────
+
+#[tokio::test]
+async fn dev_profile_shows_the_fixed_plugin_text() {
+    // In a dev profile Autumn shows the error detail. The plugin text is then
+    // the detail, and it still has no panic text.
+    let client = TestApp::new()
+        .profile("dev")
+        .plugin(BevyPlugin::new(counting).config(manual()))
+        .routes(routes![explode, exit, count])
+        .build();
+    let panicked = client.get("/explode").send().await;
+    panicked
+        .assert_status(500)
+        .assert_body_contains("internal error");
+    assert!(
+        !panicked.text().contains("secret-xyz"),
+        "{}",
+        panicked.text()
+    );
+
+    let _ = client.get("/exit").send().await;
+    client
+        .get("/count")
+        .send()
+        .await
+        .assert_status(503)
+        .assert_body_contains("bevy runtime is unavailable");
+
+    let without = TestApp::new().profile("dev").routes(routes![count]).build();
+    let missing = without.get("/count").send().await;
+    missing
+        .assert_status(500)
+        .assert_body_contains("internal error");
+    assert!(!missing.text().contains("BevyPlugin"), "{}", missing.text());
+}

@@ -123,7 +123,7 @@ pub struct BevyConfig {
     /// The time the server waits for setup and the first update. Default:
     /// 10 s.
     pub startup_timeout: Duration,
-    /// The health check is down when the thread is busy for longer than
+    /// The health check is down when the thread works on one item for longer than
     /// this. Default: 1 s.
     pub stall_threshold: Duration,
     /// The time shutdown waits for the thread to stop. Default: 5 s.
@@ -194,6 +194,36 @@ impl BevyConfig {
         }
     }
 
+    /// Checks each value.
+    ///
+    /// # Errors
+    ///
+    /// The first value out of range.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(timeout) = self.command_timeout {
+            check_duration("command_timeout_ms", timeout)?;
+        }
+        check_duration("startup_timeout_ms", self.startup_timeout)?;
+        check_duration("stall_threshold_ms", self.stall_threshold)?;
+        check_duration("shutdown_timeout_ms", self.shutdown_timeout)?;
+        check_duration("manual_time_step_ms", self.manual_time_step)
+    }
+
+    /// Reads the `[bevy]` table of the `autumn.toml` that Autumn reads: in
+    /// `AUTUMN_MANIFEST_DIR` first, then in the current directory. A missing
+    /// file gives the defaults. Profile files and `AUTUMN_*` variables do not
+    /// apply to this table.
+    ///
+    /// [`BevyPlugin`](crate::BevyPlugin) calls it when the app gives no
+    /// configuration in code.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`BevyConfig::load`].
+    pub fn load_default() -> Result<Self, ConfigError> {
+        Self::load(default_path(&autumn_web::config::OsEnv))
+    }
+
     /// Sets [`BevyConfig::tick_mode`].
     #[must_use]
     pub const fn with_tick_mode(mut self, mode: TickMode) -> Self {
@@ -242,6 +272,18 @@ impl BevyConfig {
         self.manual_time_step = step;
         self
     }
+}
+
+/// The `autumn.toml` path, found the same way as Autumn finds it.
+fn default_path(env: &dyn autumn_web::config::Env) -> std::path::PathBuf {
+    const FILE: &str = "autumn.toml";
+    if let Ok(dir) = env.var("AUTUMN_MANIFEST_DIR") {
+        let candidate = Path::new(&dir).join(FILE);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    std::path::PathBuf::from(FILE)
 }
 
 /// An `autumn.toml` document, seen only through its `[bevy]` table.
@@ -303,13 +345,27 @@ impl Section {
     }
 }
 
-/// A duration key in milliseconds. Zero is an error.
-const fn millis(key: &'static str, value: Option<u64>) -> Result<Option<Duration>, ConfigError> {
-    match value {
-        Some(0) => Err(ConfigError::ZeroDuration { key }),
-        Some(ms) => Ok(Some(Duration::from_millis(ms))),
-        None => Ok(None),
+/// The longest duration that a key accepts: 24 hours. A longer value is
+/// almost certainly a mistake, and it can overflow `Instant` arithmetic.
+pub const MAX_DURATION: Duration = Duration::from_hours(24);
+
+/// A duration must be at least 1 ms and at most [`MAX_DURATION`].
+const fn check_duration(key: &'static str, value: Duration) -> Result<(), ConfigError> {
+    if value.as_millis() == 0 {
+        Err(ConfigError::ZeroDuration { key })
+    } else if value.as_nanos() > MAX_DURATION.as_nanos() {
+        Err(ConfigError::DurationTooLong { key })
+    } else {
+        Ok(())
     }
+}
+
+/// A duration key in milliseconds, checked by [`check_duration`].
+fn millis(key: &'static str, value: Option<u64>) -> Result<Option<Duration>, ConfigError> {
+    value.map_or(Ok(None), |ms| {
+        let duration = Duration::from_millis(ms);
+        check_duration(key, duration).map(|()| Some(duration))
+    })
 }
 
 const fn nonzero_u32(value: u32) -> NonZeroU32 {
@@ -323,5 +379,35 @@ const fn nonzero_usize(value: usize) -> NonZeroUsize {
     match NonZeroUsize::new(value) {
         Some(n) => n,
         None => NonZeroUsize::MIN,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use autumn_web::config::MockEnv;
+
+    #[test]
+    fn default_path_prefers_the_manifest_dir() {
+        let dir =
+            std::env::temp_dir().join(format!("autumn-plugin-bevy-path-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("autumn.toml");
+        std::fs::write(&file, "[bevy]\ntick_hz = 5\n").unwrap();
+        let env = MockEnv::new().with("AUTUMN_MANIFEST_DIR", dir.to_str().unwrap());
+        assert_eq!(default_path(&env), file);
+        let loaded = BevyConfig::load(default_path(&env)).unwrap();
+        assert_eq!(loaded.tick_mode, TickMode::Fixed(TickRate::new(5).unwrap()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn default_path_falls_back_to_the_current_directory() {
+        let env = MockEnv::new().with("AUTUMN_MANIFEST_DIR", "/no/such/dir/for/bevy");
+        assert_eq!(default_path(&env), std::path::PathBuf::from("autumn.toml"));
+        assert_eq!(
+            default_path(&MockEnv::new()),
+            std::path::PathBuf::from("autumn.toml")
+        );
     }
 }

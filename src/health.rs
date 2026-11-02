@@ -17,8 +17,8 @@ use crate::status::RuntimeStatus;
 
 /// The health indicator of a [`BevyRuntime`](crate::BevyRuntime).
 ///
-/// It is up only when the status is `Running` and the thread is not busy
-/// for longer than
+/// It is up only when the status is `Running` and the thread does not work
+/// on one update or one command for longer than
 /// [`BevyConfig::stall_threshold`](crate::BevyConfig::stall_threshold). It
 /// reads counters only, so it never waits on the Bevy thread.
 #[derive(Clone)]
@@ -34,10 +34,14 @@ pub struct Verdict {
 }
 
 /// The health rule. Pure, so that the tests can check each case.
-pub const fn evaluate(status: RuntimeStatus, busy_for: Duration, threshold: Duration) -> Verdict {
+pub const fn evaluate(
+    status: RuntimeStatus,
+    working_for: Duration,
+    threshold: Duration,
+) -> Verdict {
     let reason = match status {
         RuntimeStatus::Running => {
-            if busy_for.as_nanos() < threshold.as_nanos() {
+            if working_for.as_nanos() < threshold.as_nanos() {
                 return Verdict {
                     up: true,
                     reason: None,
@@ -63,8 +67,8 @@ impl BevyHealth {
     pub fn snapshot(&self) -> HealthCheckOutput {
         let shared = &self.shared;
         let status = shared.status();
-        let busy_for = shared.busy_for();
-        let verdict = evaluate(status, busy_for, shared.config.stall_threshold);
+        let working_for = shared.working_for();
+        let verdict = evaluate(status, working_for, shared.config.stall_threshold);
         let mut details = HashMap::from([
             ("status".to_owned(), Value::from(status.as_str())),
             (
@@ -76,8 +80,8 @@ impl BevyHealth {
                 Value::from(shared.stats.queue_depth.load(Ordering::Relaxed)),
             ),
             (
-                "busy_ms".to_owned(),
-                Value::from(u64::try_from(busy_for.as_millis()).unwrap_or(u64::MAX)),
+                "working_ms".to_owned(),
+                Value::from(u64::try_from(working_for.as_millis()).unwrap_or(u64::MAX)),
             ),
         ]);
         let output = if verdict.up {
@@ -127,16 +131,16 @@ mod tests {
             (Stopped, idle, false, Some("stopped")),
             (Failed, idle, false, Some("failed")),
         ];
-        for (status, busy, up, reason) in rows {
-            let verdict = evaluate(status, busy, LIMIT);
-            assert_eq!(verdict.up, up, "{status:?} busy {busy:?}");
-            assert_eq!(verdict.reason, reason, "{status:?} busy {busy:?}");
+        for (status, working, up, reason) in rows {
+            let verdict = evaluate(status, working, LIMIT);
+            assert_eq!(verdict.up, up, "{status:?} working {working:?}");
+            assert_eq!(verdict.reason, reason, "{status:?} working {working:?}");
         }
     }
 
     #[test]
     fn up_only_when_running() {
-        for status in RuntimeStatus::ALL {
+        for &status in RuntimeStatus::ALL {
             if evaluate(status, Duration::ZERO, LIMIT).up {
                 assert_eq!(status, Running);
             }

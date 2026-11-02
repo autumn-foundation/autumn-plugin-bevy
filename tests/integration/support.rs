@@ -157,3 +157,37 @@ pub async fn entered(gate: Gate) -> Gate {
     .await
     .expect("join")
 }
+
+/// Runs `fut` to the end on this thread, with no tokio runtime.
+pub fn block_on<F: Future>(fut: F) -> F::Output {
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct Unpark(std::thread::Thread);
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        if let Poll::Ready(out) = fut.as_mut().poll(&mut cx) {
+            return out;
+        }
+        std::thread::park_timeout(Duration::from_millis(10));
+    }
+}
+
+/// A value whose drop panics. It checks that the runtime contains a panic in
+/// a drop.
+#[derive(Debug)]
+pub struct PanicOnDrop;
+
+impl Drop for PanicOnDrop {
+    fn drop(&mut self) {
+        assert!(std::thread::panicking(), "drop boom");
+    }
+}

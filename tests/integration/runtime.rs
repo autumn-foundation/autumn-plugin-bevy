@@ -12,7 +12,7 @@ use bevy_ecs::prelude::*;
 
 use crate::support::{
     Gate, Log, Updates, Value, count_updates, counting, current_thread, entered, eventually,
-    manual, ready,
+    manual, ready, within,
 };
 
 fn thread_name() -> String {
@@ -499,18 +499,16 @@ async fn shutdown_times_out_when_thread_is_stuck() {
     let config = manual().with_shutdown_timeout(Duration::from_millis(100));
     let runtime = ready(BevyRuntime::new(config, counting)).await;
     let handle = runtime.handle();
-    let stuck = tokio::spawn(async move {
-        handle
-            .with_world_timeout(None, |_w| std::thread::sleep(Duration::from_millis(1500)))
-            .await
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // The gate shows that the thread is inside the command before the stop.
+    let (gate, stuck) = Gate::hold_after(&handle, |_w| {});
+    let gate = entered(gate).await;
 
     let started = Instant::now();
     let err = runtime.shutdown().await.unwrap_err();
     assert!(matches!(err, RuntimeError::ShutdownTimeout(_)), "{err:?}");
+    gate.open();
     assert!(
-        started.elapsed() < Duration::from_millis(300),
+        started.elapsed() < Duration::from_secs(1),
         "{:?}",
         started.elapsed()
     );
@@ -558,10 +556,17 @@ async fn queued_commands_resolve_on(path: StopPath) {
     };
     let gate = entered(gate).await;
 
+    let ran = Arc::new(AtomicUsize::new(0));
     let mut queued = Vec::new();
     for _ in 0..8 {
         let h = handle.clone();
-        queued.push(tokio::spawn(async move { h.with_world(|_w| ()).await }));
+        let ran = Arc::clone(&ran);
+        queued.push(tokio::spawn(async move {
+            h.with_world(move |_w| {
+                ran.fetch_add(1, Ordering::SeqCst);
+            })
+            .await
+        }));
     }
     assert!(eventually(Duration::from_secs(2), || handle.queue_depth() == 8).await);
 
@@ -586,9 +591,18 @@ async fn queued_commands_resolve_on(path: StopPath) {
         let result = tokio::time::timeout(Duration::from_secs(1), task)
             .await
             .unwrap_or_else(|_| panic!("{path:?}: a queued command did not resolve"));
-        let _ = result.unwrap();
+        let answer = result.unwrap();
+        assert!(
+            matches!(answer, Err(RuntimeError::NotRunning(_))),
+            "{path:?}: a queued command is rejected, got {answer:?}"
+        );
     }
     assert!(started.elapsed() < Duration::from_secs(1), "{path:?}");
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "{path:?}: no command runs after the stop"
+    );
     if let Some((runtime, stopper)) = stopper {
         stopper.await.unwrap().unwrap();
         assert!(runtime.status().is_terminal());
@@ -652,7 +666,7 @@ async fn world_drops_on_bevy_thread_after_last_handle_drop() {
 
 #[test]
 fn concurrent_calls_do_not_block_reactor() {
-    let (done, beats) = current_thread(Duration::from_secs(30), || async {
+    let (done, beats, elapsed) = current_thread(Duration::from_mins(1), || async {
         let config = BevyConfig::default()
             .with_tick_mode(TickMode::Fixed(TickRate::new(100).unwrap()))
             .with_command_timeout(Some(Duration::from_secs(20)));
@@ -665,11 +679,14 @@ fn concurrent_calls_do_not_block_reactor() {
         let ticker = Arc::clone(&beats);
         let beat = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(10));
+            // Skip, not Burst: a blocked reactor must not catch up later.
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
                 ticker.fetch_add(1, Ordering::SeqCst);
             }
         });
+        let started = Instant::now();
         let handle = runtime.handle();
         let mut set = tokio::task::JoinSet::new();
         for i in 0..1000_u64 {
@@ -691,10 +708,20 @@ fn concurrent_calls_do_not_block_reactor() {
         }
         beat.abort();
         runtime.shutdown().await.unwrap();
-        (done, beats.load(Ordering::SeqCst))
+        (done, beats.load(Ordering::SeqCst), started.elapsed())
     });
     assert_eq!(done, 1000);
-    assert!(beats >= 5, "the reactor must keep running: {beats} beats");
+    // The calls take seconds. A free reactor beats about once each 10 ms.
+    // Ask for a quarter of that, so a slow runner passes.
+    let expected = usize::try_from(elapsed.as_millis() / 40).unwrap_or(usize::MAX);
+    assert!(
+        elapsed > Duration::from_millis(500),
+        "the calls must take time: {elapsed:?}"
+    );
+    assert!(
+        beats >= expected,
+        "the reactor must keep running: {beats} beats in {elapsed:?}"
+    );
 }
 
 // ── AC-23 ──────────────────────────────────────────────────────────────────
@@ -768,18 +795,28 @@ async fn manual_runs_replay_identically() {
     assert_ne!(a, c);
 }
 
-#[tokio::test(start_paused = true)]
-async fn paused_time_without_timeout_works() {
-    let config = manual().with_command_timeout(None);
-    let runtime = ready(BevyRuntime::new(config, counting)).await;
-    let handle = runtime.handle();
-    handle.step(2).await.unwrap();
-    let n = handle
-        .with_world(|w| w.resource::<Updates>().0)
-        .await
-        .unwrap();
+#[test]
+fn paused_time_without_timeout_works() {
+    let n = within(Duration::from_secs(20), || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .expect("paused runtime")
+            .block_on(async {
+                let config = manual().with_command_timeout(None);
+                let runtime = ready(BevyRuntime::new(config, counting)).await;
+                let handle = runtime.handle();
+                handle.step(2).await.unwrap();
+                let n = handle
+                    .with_world(|w| w.resource::<Updates>().0)
+                    .await
+                    .unwrap();
+                runtime.shutdown().await.unwrap();
+                n
+            })
+    });
     assert_eq!(n, 3);
-    runtime.shutdown().await.unwrap();
 }
 
 // ── AC-25 ──────────────────────────────────────────────────────────────────

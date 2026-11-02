@@ -2,7 +2,7 @@
 //! `App` and the `World`.
 //!
 //! Order in each pass: the stop flag, then a due update, then one message.
-//! So a flood of commands cannot stop the ticks (invariant I9).
+//! So a flood of commands cannot stop the updates (invariant I9).
 
 use std::cell::Cell;
 use std::io;
@@ -13,6 +13,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use bevy_app::{App, AppExit, PluginsState};
+use bevy_ecs::resource::Resource;
 
 use crate::Setup;
 use crate::command::{Msg, panic_message};
@@ -47,9 +48,17 @@ pub fn on_runtime_thread(id: RuntimeId) -> bool {
 pub fn spawn(shared: Arc<Shared>, setup: Setup, rx: Receiver<Msg>) -> io::Result<()> {
     std::thread::Builder::new()
         .name(THREAD_NAME.to_owned())
-        .spawn(move || Driver { shared, rx }.run(setup))
+        .spawn(move || {
+            let _guard = UnwindGuard(Arc::clone(&shared));
+            Driver { shared, rx }.run(setup);
+        })
         .map(drop)
 }
+
+/// A marker that setup must keep. `App::run` replaces the app with an empty
+/// one, and the marker then is gone.
+#[derive(Resource)]
+struct SetupMarker;
 
 /// What the loop does next.
 enum Flow {
@@ -59,6 +68,32 @@ enum Flow {
     /// A system wrote `AppExit::Success`.
     Exit,
     Fail(Failure),
+}
+
+const fn is_continue(flow: &Flow) -> bool {
+    matches!(flow, Flow::Continue)
+}
+
+/// The last line of defence. A panic that the loop did not contain ends the
+/// thread. The guard then moves the status to `Failed`, so callers and the
+/// health check do not see a live runtime that is gone.
+struct UnwindGuard(Arc<Shared>);
+
+impl Drop for UnwindGuard {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let shared = &self.0;
+        tracing::error!(runtime = %shared.id, "the bevy thread ended with a panic");
+        shared.set_failure(Failure::UpdatePanicked(
+            "the bevy thread ended with a panic".to_owned(),
+        ));
+        shared.transition(Event::Fail);
+        shared.stats.queue_depth.store(0, Ordering::Relaxed);
+        shared.mark_idle();
+        shared.transition(Event::Drained { failed: true });
+    }
 }
 
 struct Driver {
@@ -71,33 +106,60 @@ impl Driver {
         CURRENT.with(|current| current.set(Some(self.shared.id)));
         let (app, flow) = self.boot(setup);
         let (app, flow) = match (app, flow) {
+            // A stop or a failure (a startup timeout) can come while the boot
+            // runs. Then the runtime never goes to `Running`.
+            (Some(app), Flow::Continue) if self.stop_or_failure() => (Some(app), Flow::Stop),
             (Some(mut app), Flow::Continue) => {
-                self.shared.transition(Event::Ready);
-                tracing::info!(runtime = %self.shared.id, "bevy runtime is running");
-                let flow = self.drive(&mut app);
-                (Some(app), flow)
+                if self.shared.ready_unless_stopped() {
+                    tracing::info!(runtime = %self.shared.id, "bevy runtime is running");
+                    let flow = self.drive(&mut app);
+                    (Some(app), flow)
+                } else {
+                    (Some(app), Flow::Stop)
+                }
             }
             other => other,
         };
         self.finish(app, flow);
     }
 
+    fn stop_or_failure(&self) -> bool {
+        self.shared.stop_requested() || self.shared.failure().is_some()
+    }
+
     /// Setup, the plugin build steps, and the first update.
     fn boot(&self, setup: Setup) -> (Option<App>, Flow) {
-        self.shared.mark_busy();
+        self.shared.mark_working();
         let config = &self.shared.config;
-        let deadline = Instant::now() + config.startup_timeout;
+        // `start` checked the limit, so the addition cannot overflow. Keep the
+        // check anyway: no limit is better than a panic.
+        let deadline = Instant::now().checked_add(config.startup_timeout);
         let built = catch_unwind(AssertUnwindSafe(|| {
             let mut app = App::new();
+            app.insert_resource(SetupMarker);
             setup(&mut app);
-            add_time(&mut app, config);
-            app
+            let kept = app.world_mut().remove_resource::<SetupMarker>().is_some();
+            if kept {
+                add_time(&mut app, config);
+            }
+            (app, kept)
         }));
         let mut app = match built {
-            Ok(app) => app,
+            Ok((app, true)) => app,
+            Ok((app, false)) => {
+                return (
+                    Some(app),
+                    Flow::Fail(Failure::SetupInvalid(
+                        "setup must not call App::run; the plugin drives the app",
+                    )),
+                );
+            }
             Err(payload) => return (None, setup_panic(payload.as_ref())),
         };
         loop {
+            if self.shared.stop_requested() {
+                return (Some(app), Flow::Stop);
+            }
             match catch_unwind(AssertUnwindSafe(|| app.plugins_state())) {
                 Ok(PluginsState::Adding) => {}
                 Ok(PluginsState::Cleaned) => break,
@@ -113,10 +175,7 @@ impl Driver {
                 }
                 Err(payload) => return (Some(app), setup_panic(payload.as_ref())),
             }
-            if self.shared.stop_requested() {
-                return (Some(app), Flow::Stop);
-            }
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 return (
                     Some(app),
                     Flow::Fail(Failure::StartupTimeout(config.startup_timeout)),
@@ -124,6 +183,9 @@ impl Driver {
             }
             tick_task_pools();
             std::thread::sleep(PLUGIN_POLL);
+        }
+        if self.stop_or_failure() {
+            return (Some(app), Flow::Stop);
         }
         // The boot update runs `Startup`. So handlers see what it made.
         let flow = match self.update(&mut app) {
@@ -150,8 +212,9 @@ impl Driver {
             if let (Some(period), Some(due)) = (period, deadline) {
                 let now = Instant::now();
                 if now >= due {
+                    self.shared.mark_working();
                     let flow = self.update(app);
-                    if !matches!(flow, Flow::Continue) {
+                    if !is_continue(&flow) {
                         return flow;
                     }
                     let (next, skipped) = next_deadline(due, period, Instant::now());
@@ -167,9 +230,9 @@ impl Driver {
             self.shared.mark_idle();
             match self.rx.recv_timeout(wait) {
                 Ok(msg) => {
-                    self.shared.mark_busy();
+                    self.shared.mark_working();
                     let flow = self.handle(app, msg);
-                    if !matches!(flow, Flow::Continue) {
+                    if !is_continue(&flow) {
                         return flow;
                     }
                 }
@@ -190,13 +253,19 @@ impl Driver {
                 Flow::Continue
             }
             Msg::Step { n, reply } => {
-                if reply.is_closed() {
-                    Stats::add(&stats.commands_cancelled);
-                    return Flow::Continue;
-                }
+                // One step is one piece of work, so the stall rule sees all
+                // of it. Before each update, read the stop flag and the caller.
                 for _ in 0..n {
+                    if reply.is_closed() {
+                        Stats::add(&stats.commands_cancelled);
+                        return Flow::Continue;
+                    }
+                    if self.shared.stop_requested() {
+                        let _ = reply.send(Err(RuntimeError::NotRunning(RuntimeStatus::Stopping)));
+                        return Flow::Stop;
+                    }
                     let flow = self.update(app);
-                    if !matches!(flow, Flow::Continue) {
+                    if !is_continue(&flow) {
                         let _ = reply.send(Err(RuntimeError::NotRunning(RuntimeStatus::Stopping)));
                         return flow;
                     }
@@ -208,10 +277,10 @@ impl Driver {
         }
     }
 
-    /// One `App::update`, with its panic contained.
+    /// One `App::update`, with its panic contained. The caller marks the
+    /// thread as working.
     fn update(&self, app: &mut App) -> Flow {
         let stats = &self.shared.stats;
-        self.shared.mark_busy();
         Stats::add(&stats.ticks);
         let started = Instant::now();
         let result = catch_unwind(AssertUnwindSafe(|| app.update()));
@@ -237,17 +306,18 @@ impl Driver {
     fn finish(self, mut app: Option<App>, flow: Flow) {
         let shared = &self.shared;
         let was = shared.status();
-        let graceful = matches!(flow, Flow::Stop) && was == RuntimeStatus::Running;
-        let event = match flow {
-            Flow::Fail(failure) => {
-                tracing::error!(runtime = %shared.id, ?failure, "bevy runtime failed");
-                shared.set_failure(failure);
-                Event::Fail
-            }
-            Flow::Continue | Flow::Stop | Flow::Exit => Event::Stop,
-        };
-        shared.transition(event);
+        let stop_flow = matches!(flow, Flow::Stop);
+        if let Flow::Fail(failure) = flow {
+            tracing::error!(runtime = %shared.id, ?failure, "bevy runtime failed");
+            shared.set_failure(failure);
+        }
+        // A failure that another thread recorded (a startup timeout) also
+        // makes this a `Fail`. Then the last update does not run (I10).
+        let failed = shared.failure().is_some();
+        shared.transition(if failed { Event::Fail } else { Event::Stop });
+        let graceful = stop_flow && was == RuntimeStatus::Running && !failed;
         if graceful && let Some(app) = app.as_mut() {
+            shared.mark_working();
             app.world_mut().write_message(AppExit::Success);
             if let Flow::Fail(failure) = self.update(app) {
                 shared.set_failure(failure);
@@ -270,8 +340,11 @@ impl Driver {
             }
         }
         // A command that comes after the drain drops with the channel. Its
-        // caller sees a closed reply and gets `NotRunning`.
-        drop(rx);
+        // caller sees a closed reply and gets `NotRunning`. A closure can
+        // panic in its drop, so drop the channel inside a guard.
+        if catch_unwind(AssertUnwindSafe(move || drop(rx))).is_err() {
+            tracing::error!(runtime = %shared.id, "a queued closure panicked in its drop");
+        }
         shared.stats.queue_depth.store(0, Ordering::Relaxed);
 
         if let Some(app) = app
@@ -305,14 +378,18 @@ fn tick_task_pools() {
 }
 
 /// Adds `TimePlugin` when setup did not add it. In manual mode, time then
-/// goes forward by a fixed step on each update.
+/// goes forward by a fixed step on each update, unless setup set its own
+/// `TimeUpdateStrategy`.
 #[cfg(feature = "time")]
 fn add_time(app: &mut App, config: &BevyConfig) {
     if app.is_plugin_added::<bevy_time::TimePlugin>() {
         return;
     }
+    let own_strategy = app
+        .world()
+        .contains_resource::<bevy_time::TimeUpdateStrategy>();
     app.add_plugins(bevy_time::TimePlugin);
-    if config.tick_mode == TickMode::Manual {
+    if config.tick_mode == TickMode::Manual && !own_strategy {
         app.insert_resource(bevy_time::TimeUpdateStrategy::ManualDuration(
             config.manual_time_step,
         ));

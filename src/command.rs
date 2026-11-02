@@ -24,7 +24,7 @@ pub enum Msg {
 
 /// A queued closure and its reply channel.
 pub trait Command: Send {
-    /// Runs the closure, or skips it when the caller has gone. It counts the
+    /// Runs the closure, or skips it when the caller is gone. It counts the
     /// outcome before the reply, so a caller never sees an old count.
     fn run(self: Box<Self>, world: &mut World, stats: &Stats);
     /// Sends `err` and does not run the closure.
@@ -48,13 +48,15 @@ where
         // the world for it.
         if reply.is_closed() {
             Stats::add(&stats.commands_cancelled);
+            contain_drop(f);
             return;
         }
         match catch_unwind(AssertUnwindSafe(|| f(world))) {
             Ok(value) => {
                 Stats::add(&stats.commands_ok);
-                // The caller can go away while the closure runs.
-                let _ = reply.send(Ok(value));
+                // When the caller went away while the closure ran, the value
+                // drops here, on the Bevy thread.
+                contain_drop(reply.send(Ok(value)));
             }
             Err(payload) => {
                 tracing::error!(panic = %panic_message(payload.as_ref()), "bevy command panicked");
@@ -65,7 +67,17 @@ where
     }
 
     fn reject(self: Box<Self>, err: RuntimeError) {
-        let _ = self.reply.send(Err(err));
+        let Self { f, reply } = *self;
+        let _ = reply.send(Err(err));
+        contain_drop(f);
+    }
+}
+
+/// Drops `value` and contains a panic in its `Drop`. User values drop on the
+/// Bevy thread, and a panic there must not end the thread.
+fn contain_drop<T>(value: T) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(move || drop(value))) {
+        tracing::error!(panic = %panic_message(payload.as_ref()), "a bevy command value panicked in its drop");
     }
 }
 

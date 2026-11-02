@@ -21,7 +21,7 @@ fn reason(output: &HealthCheckOutput) -> Option<String> {
         .map(str::to_owned)
 }
 
-const UP_KEYS: [&str; 4] = ["busy_ms", "queue_depth", "status", "ticks"];
+const UP_KEYS: [&str; 4] = ["working_ms", "queue_depth", "status", "ticks"];
 
 // ── AC-19 ──────────────────────────────────────────────────────────────────
 

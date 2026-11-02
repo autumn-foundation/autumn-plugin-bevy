@@ -70,8 +70,19 @@ fn ci_workflow_has_required_jobs() {
         assert!(ci.contains(needle), "ci.yml must contain {needle}");
     }
     let gate = ci.split("\n  ci-gate:").nth(1).expect("ci-gate job");
+    let needs = gate
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("needs:"))
+        .expect("ci-gate has a needs line");
+    let needs: Vec<&str> = needs
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(str::trim)
+        .collect();
     for job in ["fmt", "clippy", "test", "coverage", "msrv", "docs"] {
-        assert!(gate.contains(job), "ci-gate must need {job}");
+        assert!(needs.contains(&job), "ci-gate must need {job}: {needs:?}");
     }
 }
 

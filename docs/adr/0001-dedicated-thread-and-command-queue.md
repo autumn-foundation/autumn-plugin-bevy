@@ -43,7 +43,7 @@ sequenceDiagram
 3. The reply comes back on a `tokio::sync::oneshot` channel.
 4. In each pass, the loop reads the stop flag first. Then it runs a due
    update. Then it runs one message. So commands cannot stop the updates.
-5. A command whose caller has gone does not run.
+5. A command does not run when its caller is gone.
 6. The fixed-rate schedule skips late ticks. The next deadline is
    `prev + period` when on time, and `now + period` when late. There is no
    burst.

@@ -19,17 +19,21 @@ An Autumn plugin that runs one headless Bevy app on its own thread. Read
 - **Never bump the version** in `Cargo.toml` unless the user asks for a
   release. Write the change in `CHANGELOG.md` under `## [Unreleased]`.
 - **The thread rule.** Only the `autumn-bevy` thread touches the `App` and
-  the `World` (`src/driver.rs`). The async side sends messages. It never
-  blocks a tokio worker: waits go through `spawn_blocking`.
-- **The lifecycle rule.** A status changes only through `lifecycle::next`.
-  A change to the lifecycle, the queue or the tick schedule needs the same
-  change in `verification/bevy_runtime.rs`, then in the tests.
-- **Count before reply.** Update a counter before the reply goes to the
-  caller, so a caller never reads an old count.
+  the `World` (`src/driver.rs`). The async side sends messages. In a tokio
+  runtime, a wait goes through `spawn_blocking`. With no runtime, or when the
+  blocking pool shuts down, the wait runs on the caller thread, with a limit.
+- **The lifecycle rule.** A status changes only through `lifecycle::next`
+  (in `Shared::apply`). A change to the lifecycle, the queue or the tick
+  schedule needs the same change in the Verus model. Then change the tests.
+- **Count before reply.** Update a counter before you send the reply. Then a
+  caller never reads an old count.
+- **Contain user code.** User closures, results and resources run and drop
+  on the Bevy thread inside `catch_unwind`. The `UnwindGuard` in
+  `src/driver.rs` is the last line of defence.
 - **Safe HTTP errors.** Handlers use `Bevy` methods, which return
   `AutumnResult`. Do not put panic text or internal data in a response body.
 - **Security defaults, not blocks.** The plugin adds no Bevy plugin with a
-  process-wide effect and does not set the Bevy runner or error handler. The
+  process-wide effect. It does not set the Bevy runner or error handler. The
   app owns these choices.
 - **No `unwrap`, `expect` or `panic!` in `src/`.** Clippy denies them. Tests
   may use them.

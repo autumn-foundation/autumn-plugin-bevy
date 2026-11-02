@@ -23,8 +23,10 @@ pub enum Failure {
     UpdatePanicked(String),
     /// A system wrote `AppExit::Error`.
     AppExitError(u8),
-    /// Dropping the app panicked.
+    /// The drop of the app panicked.
     DropPanicked(String),
+    /// Setup did a thing that the plugin does not allow.
+    SetupInvalid(&'static str),
 }
 
 /// Counters for health and metrics.
@@ -79,9 +81,9 @@ pub struct Shared {
     stop: AtomicBool,
     failure: Mutex<Option<Failure>>,
     epoch: Instant,
-    /// Nanoseconds after `epoch` plus one when the thread became busy, or 0
+    /// Nanoseconds after `epoch` plus one when the thread started work, or 0
     /// when it waits.
-    busy_since: AtomicU64,
+    working_since: AtomicU64,
 }
 
 impl Shared {
@@ -96,7 +98,7 @@ impl Shared {
             stop: AtomicBool::new(false),
             failure: Mutex::new(None),
             epoch: Instant::now(),
-            busy_since: AtomicU64::new(0),
+            working_since: AtomicU64::new(0),
         }
     }
 
@@ -112,7 +114,17 @@ impl Shared {
     /// Applies `event` through [`lifecycle::next`]. Returns the new status, or
     /// `None` when the event is not allowed. Then nothing changes.
     pub(crate) fn transition(&self, event: Event) -> Option<RuntimeStatus> {
-        let mut status = self.lock_status();
+        let status = self.lock_status();
+        self.apply(status, event)
+    }
+
+    /// Applies `event` under the held status lock, then notifies the
+    /// waiters. The only place that writes the status.
+    fn apply(
+        &self,
+        mut status: MutexGuard<'_, RuntimeStatus>,
+        event: Event,
+    ) -> Option<RuntimeStatus> {
         let next = lifecycle::next(*status, event);
         match next {
             Some(to) => {
@@ -128,6 +140,31 @@ impl Shared {
             }
         }
         next
+    }
+
+    /// Moves `Starting` to `Running`, but only when no stop and no failure is
+    /// recorded. The check and the change happen under the status lock, so
+    /// [`Shared::record_startup_timeout`] cannot come between them.
+    pub(crate) fn ready_unless_stopped(&self) -> bool {
+        let status = self.lock_status();
+        if self.stop_requested() || self.failure().is_some() {
+            return false;
+        }
+        self.apply(status, Event::Ready).is_some()
+    }
+
+    /// Records a startup timeout and asks the thread to stop, but only while
+    /// the status is still `Starting`. Returns `false` when the runtime is
+    /// already past `Starting`.
+    pub(crate) fn record_startup_timeout(&self, limit: Duration) -> bool {
+        let status = self.lock_status();
+        if *status != RuntimeStatus::Starting {
+            return false;
+        }
+        self.set_failure(Failure::StartupTimeout(limit));
+        self.request_stop();
+        drop(status);
+        true
     }
 
     /// Blocks until `done` is `true` for the status, or until `timeout`.
@@ -180,20 +217,20 @@ impl Shared {
     }
 
     /// The thread starts work: an update or a command.
-    pub(crate) fn mark_busy(&self) {
+    pub(crate) fn mark_working(&self) {
         let now = self.nanos_since_epoch().saturating_add(1);
-        self.busy_since.store(now, Ordering::Release);
+        self.working_since.store(now, Ordering::Release);
     }
 
     /// The thread waits for work.
     pub(crate) fn mark_idle(&self) {
-        self.busy_since.store(0, Ordering::Release);
+        self.working_since.store(0, Ordering::Release);
     }
 
-    /// How long the thread has been busy with one piece of work. Zero when it
+    /// The time since the thread started its current work. Zero when it
     /// waits.
-    pub(crate) fn busy_for(&self) -> Duration {
-        match self.busy_since.load(Ordering::Acquire) {
+    pub(crate) fn working_for(&self) -> Duration {
+        match self.working_since.load(Ordering::Acquire) {
             0 => Duration::ZERO,
             since => {
                 let now = self.nanos_since_epoch().saturating_add(1);

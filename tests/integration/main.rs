@@ -17,6 +17,7 @@ mod http;
 mod metrics;
 mod plugin;
 mod repo_hygiene;
+mod review;
 mod runtime;
 #[cfg(feature = "time")]
 mod time;

@@ -28,8 +28,19 @@ bevy_app = "0.20"
 bevy_ecs = "0.20"
 ```
 
-The crate uses `bevy_app` and `bevy_ecs` only. It does not use the `bevy`
-crate, because that crate adds rendering.
+The crate uses `bevy_app`, `bevy_ecs` and `bevy_tasks`, and `bevy_time` with
+the `time` feature. It does not use the `bevy` crate, because that crate adds
+rendering.
+
+## Words
+
+- **Update**: one run of `App::update`. The runtime counts updates as
+  ticks (`ticks()`, `bevy_ticks_total`).
+- **Skipped tick**: a slot of the fixed-rate schedule with no update,
+  because the loop was late.
+- **Command**: a closure that runs on the world.
+- **Busy**: the command queue is full.
+- **Working**: the Bevy thread runs one update or one command.
 
 ## Quick start
 
@@ -133,7 +144,7 @@ The thread also stops in these cases:
 - A system writes `AppExit::Success`. The status becomes `Stopped`.
 - A system writes `AppExit::Error`, or an update panics. The status becomes
   `Failed`.
-- The runtime and all its handles are dropped.
+- Your code drops the runtime and all its handles.
 
 The Autumn server continues in all cases. Calls then fail with 503.
 
@@ -165,7 +176,12 @@ Rules for a command:
 - Do not call the same runtime from inside a command. That call fails with
   `Reentrant`, because it would wait for itself.
 - When the wait limit passes before the command starts, the command does not
-  run. Thus a timed-out request makes no hidden change.
+  run. A command that started before the limit runs to the end, and its
+  change stays.
+- A panic in a command can leave the world with part of a change. The
+  runtime does not undo it.
+- `step(n)` reads the stop flag and the caller before each update. Take `n`
+  from trusted input only: the updates run one after the other.
 
 The methods of `Bevy` return `AutumnResult` with a safe HTTP error. Use
 `bevy.handle()` to get a `BevyHandle`. Its methods return the typed
@@ -174,17 +190,20 @@ The methods of `Bevy` return `AutumnResult` with a safe HTTP error. Use
 Do not use `?` on a `RuntimeError` in a handler. The `From` impl of
 autumn-web makes every error a 500. Use `RuntimeError::into_autumn_error`.
 
-| `RuntimeError` | HTTP | Body text |
+| `RuntimeError` | HTTP | Detail in a dev profile |
 | --- | --- | --- |
 | `Busy` | 503 | "bevy runtime is busy" |
 | `NotRunning`, `Timeout`, `SetupPanicked`, `StartupTimeout`, `ShutdownTimeout` | 503 | "bevy runtime is unavailable" |
-| `NotInstalled`, `CommandPanicked`, `Reentrant`, `WrongMode`, `AlreadyStarted`, `Spawn` | 500 | "internal error" |
+| `NotInstalled`, `CommandPanicked`, `Reentrant`, `WrongMode`, `AlreadyStarted`, `Spawn`, `InvalidConfig`, `InvalidSetup` | 500 | "internal error" |
 
-Autumn also hides the detail of each 5xx response. A panic message goes to
-the log only.
+Outside a dev profile, Autumn replaces the detail of each 5xx with its own
+text: "Service unavailable" or "Internal server error". A panic message goes
+to the log only.
 
 Outside a handler, use `BevyHandle::from_state(&state)`. A test, a job, or a
-command-line tool can use `BevyRuntime` with no Autumn app.
+command-line tool can use `BevyRuntime` with no Autumn app. With no tokio
+runtime, a call waits with no limit. A tokio runtime must have its time
+driver on.
 
 ## Configuration
 
@@ -206,7 +225,10 @@ let plugin = BevyPlugin::new(|_app| {}).config(config);
 # }
 ```
 
-Or read the `[bevy]` table of `autumn.toml`:
+With no configuration in code, the plugin reads the `[bevy]` table of
+`autumn.toml`. It finds the file the way Autumn does: in
+`AUTUMN_MANIFEST_DIR` first, then in the current directory. A bad table stops
+the boot with an error that names the key.
 
 ```toml
 [bevy]
@@ -216,11 +238,15 @@ queue_capacity = 256
 command_timeout_ms = 2000
 ```
 
+To read the table and change it in code, use `BevyConfig::load_default`:
+
 ```rust,no_run
+use std::time::Duration;
+
 use autumn_plugin_bevy::{BevyConfig, BevyPlugin};
 
 # fn main() -> Result<(), autumn_plugin_bevy::ConfigError> {
-let config = BevyConfig::load("autumn.toml")?;
+let config = BevyConfig::load_default()?.with_command_timeout(Some(Duration::from_secs(1)));
 let plugin = BevyPlugin::new(|_app| {}).config(config);
 # let _ = plugin;
 # Ok(())
@@ -236,18 +262,21 @@ let plugin = BevyPlugin::new(|_app| {}).config(config);
 | `startup_timeout_ms` | 10000 | 1 or more |
 | `stall_threshold_ms` | 1000 | 1 or more |
 | `shutdown_timeout_ms` | 5000 | 1 or more |
-| `manual_time_step_ms` | 16 (1/60 s in code) | 1 or more |
+| `manual_time_step_ms` | 1/60 s | 1 or more |
 
+- A duration is 1 ms to 24 hours (`MAX_DURATION`). A setter takes any
+  value, so `BevyRuntime::start` checks the values again
+  (`BevyConfig::validate`) and fails with `InvalidConfig`.
 - An unknown key is an error. The error names the key.
 - The plugin declares `[bevy]`, so `server.strict_config = true` accepts it.
-- The plugin does not read the file itself. Call `BevyConfig::load`. Profile
-  files and `AUTUMN_*` variables do not apply to this table.
-- A setter after `load` changes the loaded value.
+- Profile files and `AUTUMN_*` variables do not apply to this table.
+- `.config(..)` on the plugin turns off the read of the table.
+- A setter after `load` or `load_default` changes the loaded value.
 
 ### Tick modes
 
 - `TickMode::Fixed(rate)`: updates run at a fixed rate. When an update is
-  late, the loop skips the missed ticks and runs no burst.
+  late, the schedule skips the missed ticks and runs no burst.
   `bevy_tick_overruns_total` counts the skipped ticks.
 - `TickMode::Manual`: updates run only for `step(n)`. Use it for tests and
   turn-based apps. A command sent before `step` sees the state before the
@@ -260,7 +289,8 @@ The `time` feature is on by default. If setup does not add
 then goes forward by `manual_time_step` on each update. Thus a test gets the
 same result each time it runs.
 
-If setup adds `TimePlugin`, the plugin does not change it.
+If setup adds `TimePlugin`, or sets a `TimeUpdateStrategy`, the plugin keeps
+it.
 
 ## Health and metrics
 
@@ -268,12 +298,12 @@ The plugin registers the health indicator `bevy` in the `Readiness` group.
 It is up only when both conditions are true:
 
 - The status is `Running`.
-- The thread is not busy with one update or one command for longer than
-  `stall_threshold`.
+- The thread does not work on one update or one command for longer than
+  `stall_threshold`. A `step(n)` message is one piece of work.
 
 When it is down, the detail `reason` is `not_started`, `starting`,
 `stalled`, `stopping`, `stopped` or `failed`. The other details are
-`status`, `ticks`, `queue_depth` and `busy_ms`.
+`status`, `ticks`, `queue_depth` and `working_ms`.
 
 The plugin registers the metrics source `bevy`:
 
@@ -288,6 +318,10 @@ The plugin registers the metrics source `bevy`:
 | `bevy_commands_total` | counter | `outcome`: `ok`, `panicked`, `busy`, `cancelled`, `timeout`, `rejected` |
 
 The label values are fixed, so the metrics cannot grow without limit.
+
+`timeout` counts callers that stopped waiting. The thread then also counts
+the same command as `cancelled` (it did not start), or as `ok` or
+`panicked` (it ran). So the outcomes can overlap.
 
 ## Tests
 
@@ -325,24 +359,35 @@ follow the paused clock.
 - With `panic = "abort"`, a panic stops the process. The plugin logs a
   warning at start.
 - Register `BevyPlugin` after the Autumn plugins that its systems use.
+- Setup must not call `App::run`: that call replaces the app with an empty
+  one. The boot then fails with `InvalidSetup`. The plugin never calls the
+  runner of the app.
 
 ## Verification
 
 `verification/bevy_runtime.rs` is a [Verus](https://github.com/verus-lang/verus)
-model of the lifecycle, the queue and the tick schedule. It proves these
-rules:
+model of the lifecycle, the queue and the tick schedule. It states these
+rules and proves them for the model:
 
-- A terminal status does not change.
-- Each status change makes the rank go up.
+- A terminal status does not change, and each status change makes the rank
+  go up.
 - The queue never holds more than its capacity.
-- At the end, each accepted command has its reply.
-- After a failure, no update and no command runs.
+- At the end, each accepted message has its reply.
+- After a failure, no update and no command runs. A failure that
+  `wait_ready` records keeps the runtime out of `Running`.
 - The health check is up only in `Running`.
-- The next tick deadline is in the future, and late ticks are skipped.
+- The next tick deadline is in the future, and the schedule skips late
+  ticks.
 
-The test `lifecycle_matches_spec_table` checks that the Rust state machine is
-the same as the model. The CI job `Verus proofs` runs Verus on each change to
-the model.
+Two Rust tests tie the model to the code:
+
+- `lifecycle_matches_spec_table` checks `lifecycle::next` against a copy of
+  the `next` table of the model. Keep the two the same by hand.
+- `f19_every_accepted_call_gets_one_answer` checks the queue accounting on
+  the real runtime.
+
+The other steps of the model describe `src/driver.rs`. The CI job
+`Verus proofs` runs Verus on each change to the model.
 
 ## Compatibility
 
