@@ -32,11 +32,11 @@ The plan (brainstorming, reverse brainstorming, six thinking hats) gave these
 | AC-23 | In manual mode, `step(n)` adds exactly `n`, and two runs give the same world. | `runtime::manual_step_is_exact`, `runtime::manual_runs_replay_identically`, `runtime::paused_time_without_timeout_works` | Done |
 | AC-24 | With `time`, `Time<Virtual>` goes forward by the fixed step; a `TimePlugin` or strategy from setup stays. | `time::manual_time_advances_by_fixed_step`, `time::user_time_plugin_is_kept`, `time::manual_mode_keeps_a_strategy_from_setup` | Done |
 | AC-25 | Fixed mode ticks alone, serves an idle call with no wait, and skips late ticks. | `schedule::tests::next_deadline_table`, `schedule::tests::next_deadline_rules`, `runtime::fixed_mode_ticks_without_requests`, `runtime::idle_command_does_not_wait_for_tick`, `runtime::command_flood_does_not_stop_ticks` | Done |
-| AC-26 | The plugin is `autumn-plugin-bevy`, has a third-party contract for 0.9, declares `[bevy]`, mounts no routes, and passes conformance. | `plugin::plugin_identity_and_conformance`, `plugin::duplicate_registration_runs_setup_once`, `plugin::plugin_registers_health_metrics_and_handle` | Partly (2) |
+| AC-26 | The plugin is `autumn-plugin-bevy`, has a third-party contract for 0.10, declares `[bevy]`, mounts no routes, and passes conformance. | `plugin::plugin_identity_and_conformance`, `plugin::duplicate_registration_runs_setup_once`, `plugin::plugin_registers_health_metrics_and_handle` | Done (2) |
 | AC-27 | The plugin keeps the app's Bevy settings and adds no plugin with a process-wide effect. | `runtime::app_owned_bevy_settings_are_kept`, `task_pools::boot_ticks_the_task_pools_that_the_app_made` | Done |
 | AC-28 | The Rust lifecycle equals the model table, and Verus proves the model. | `lifecycle::tests::lifecycle_matches_spec_table`, `lifecycle::tests::lifecycle_proptest`; CI job `Verus proofs`: "19 verified, 0 errors" | Done (3) |
 | AC-29 | Each public item has a doc comment; the README examples compile; the ADRs, CHANGELOG and CLAUDE.md exist. | `missing_docs = "deny"`, `cargo test --doc` (7), `cargo doc` with `-D warnings`, `repo_hygiene::docs_and_adrs_exist` | Done |
-| AC-30 | CI runs fmt, clippy, tests on three systems, coverage of 85% or more, MSRV 1.95 and docs, behind one gate. | `.github/workflows/ci.yml`, `repo_hygiene::ci_workflow_has_required_jobs`; local: clippy clean, coverage 93.7%, `cargo +1.95.0 check` | Done (3) |
+| AC-30 | CI runs fmt, clippy, tests on three systems, coverage of 85% or more, MSRV 1.97 and docs, behind one gate. | `.github/workflows/ci.yml`, `repo_hygiene::ci_workflow_has_required_jobs`; local: clippy clean, coverage 93.7%, `cargo +1.97.0 check` | Done (3) |
 
 ## Notes
 
@@ -44,9 +44,6 @@ The plan (brainstorming, reverse brainstorming, six thinking hats) gave these
    500 ms) than in the plan (10 to 50 ms), so that slow CI runners pass. The
    calls do not wait: the tests hold the Bevy thread for seconds, so a wait
    would show.
-2. autumn-web 0.9 has no no-route mode in its library conformance harness. The
-   test accepts exactly one failure, `route-attribution` with "No routes", and
-   needs every other check to pass. The fix is in
-   autumn-foundation/autumn#3566 (`ConformanceConfig::no_routes()`). Switch
-   the test to it when a release has it.
+2. The test runs the library conformance harness with
+   `ConformanceConfig::no_routes()` (autumn-web 0.10). Every check must pass.
 3. CI runs the Verus job and the full matrix on each push.

@@ -1,4 +1,4 @@
-msrv = "1.95.0"
+msrv = "1.97.0"
 # Tests may use unwrap, expect and panic. Production code may not.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true

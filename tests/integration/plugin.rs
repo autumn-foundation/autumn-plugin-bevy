@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use autumn_plugin_bevy::prelude::*;
 use autumn_web::actuator::HealthStatus;
 use autumn_web::plugin::Plugin;
-use autumn_web::plugin_conformance::{CheckStatus, ConformanceConfig, run_conformance};
+use autumn_web::plugin_conformance::{ConformanceConfig, run_conformance};
 use autumn_web::test::TestApp;
 use bevy_app::App;
 
@@ -26,7 +26,7 @@ fn plugin_identity_and_conformance() {
     assert!(label.contains(env!("CARGO_PKG_VERSION")), "{label}");
     let debug = format!("{contract:?}");
     assert!(
-        debug.contains("\"0.9\""),
+        debug.contains("\"0.10\""),
         "a third-party range, not lockstep: {debug}"
     );
 
@@ -36,28 +36,13 @@ fn plugin_identity_and_conformance() {
     let routes = builder.plugin_route_infos().expect("route infos");
     assert!(routes.is_empty(), "the plugin mounts no routes: {routes:?}");
 
-    let config = ConformanceConfig::new(BevyPlugin::NAME).contract(contract);
+    // The plugin mounts no routes. `no_routes` makes the harness accept
+    // that, so every check must pass.
+    let config = ConformanceConfig::new(BevyPlugin::NAME)
+        .no_routes()
+        .contract(contract);
     let report = run_conformance(&config, &routes);
-    // autumn-web 0.9 has no no-routes mode in the library harness (the CLI
-    // has `--no-routes`). So the one expected failure is route-attribution
-    // with "No routes". Every other check must pass.
-    for check in &report.checks {
-        if check.name == "route-attribution" {
-            assert_eq!(check.status, CheckStatus::Fail);
-            assert!(
-                check.message.starts_with("No routes attributed"),
-                "{}",
-                check.message
-            );
-        } else {
-            assert_ne!(
-                check.status,
-                CheckStatus::Fail,
-                "{}",
-                report.to_text_report()
-            );
-        }
-    }
+    assert!(report.passed(), "{}", report.to_text_report());
 }
 
 #[tokio::test]

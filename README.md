@@ -21,7 +21,7 @@ The plugin mounts no routes.
 
 ```toml
 [dependencies]
-autumn-web = "0.9"
+autumn-web = "0.10"
 autumn-plugin-bevy = "0.1"
 # Add these two directly: the Bevy derive macros look for them by name.
 bevy_app = "0.20"
@@ -401,7 +401,7 @@ The other steps of the model describe `src/driver.rs`. The CI job
 
 | This crate | autumn-web | Bevy | Rust |
 | --- | --- | --- | --- |
-| 0.1 | 0.9 | 0.20 | 1.95 or later |
+| 0.1 | 0.10 | 0.20 | 1.97 or later |
 
 ## License
 
