@@ -63,7 +63,7 @@ fn ci_workflow_has_required_jobs() {
         "macos-latest",
         "windows-latest",
         "--fail-under-lines 85",
-        "1.95",
+        "1.97",
         "-D warnings",
         "--no-default-features",
     ] {

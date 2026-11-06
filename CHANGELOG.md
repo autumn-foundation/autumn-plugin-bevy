@@ -6,6 +6,13 @@ All notable changes to this crate are in this file. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Support `autumn-web` 0.10. The plugin now needs `autumn-web` 0.10 and
+  Rust 1.97.
+- The conformance test uses `ConformanceConfig::no_routes()`. It no longer
+  accepts the `route-attribution` failure.
+
 ### Added
 
 - `BevyPlugin`: an Autumn plugin that runs one headless Bevy app on its own
