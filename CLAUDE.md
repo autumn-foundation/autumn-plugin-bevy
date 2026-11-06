@@ -16,6 +16,8 @@ An Autumn plugin that runs one headless Bevy app on its own thread. Read
 
 ## Rules
 
+- README Rust snippets are doctests. Make them compile; use `no_run`, not `ignore`.
+  `tests/doc_snippets.rs` checks the TOML snippets and the version pins in the docs.
 - **Never bump the version** in `Cargo.toml` unless the user asks for a
   release. Write the change in `CHANGELOG.md` under `## [Unreleased]`.
 - **The thread rule.** Only the `autumn-bevy` thread touches the `App` and
