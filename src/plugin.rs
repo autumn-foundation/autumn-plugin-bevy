@@ -18,7 +18,7 @@ use crate::handle::BevyHandle;
 use crate::runtime::BevyRuntime;
 
 /// The `autumn-web` versions that this release supports.
-const AUTUMN_WEB_RANGE: &str = "0.10";
+const AUTUMN_WEB_RANGE: &str = "0.11";
 
 /// The Autumn plugin that runs one headless Bevy app.
 ///
