@@ -26,7 +26,7 @@ fn plugin_identity_and_conformance() {
     assert!(label.contains(env!("CARGO_PKG_VERSION")), "{label}");
     let debug = format!("{contract:?}");
     assert!(
-        debug.contains("\"0.10\""),
+        debug.contains("\"0.11\""),
         "a third-party range, not lockstep: {debug}"
     );
 

@@ -8,7 +8,7 @@ All notable changes to this crate are in this file. The format follows
 
 ### Changed
 
-- Support `autumn-web` 0.10. The plugin now needs `autumn-web` 0.10 and
+- Support `autumn-web` 0.11. The plugin now needs `autumn-web` 0.11 and
   Rust 1.97.
 - The conformance test uses `ConformanceConfig::no_routes()`. It no longer
   accepts the `route-attribution` failure.
